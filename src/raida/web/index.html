@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>raida</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/vendor/marked.umd.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">raida</span>
+    <span class="brand-sub">offline source harness</span>
+  </div>
+  <div class="session-controls">
+    <select id="session-select" class="session-select" aria-label="Session"></select>
+    <button id="new-session" class="btn btn-quiet" type="button" title="New session">New</button>
+    <button id="rename-session" class="btn btn-quiet" type="button" title="Rename session">Rename</button>
+    <button id="delete-session" class="btn btn-quiet btn-danger" type="button" title="Delete session">Delete</button>
+  </div>
+  <div id="status-strip" class="status-strip" aria-live="polite"></div>
+</header>
+
+<main class="layout">
+  <aside class="sources-pane">
+    <div class="pane-header">
+      <h2>Sources</h2>
+      <span id="sources-summary" class="pane-summary"></span>
+    </div>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Add sources">
+      <div class="dropzone-inner">
+        <div class="dropzone-title">Drop files here</div>
+        <div class="dropzone-sub">text, markdown, pdf, docx, srt, vtt, audio, video</div>
+        <div class="dropzone-actions">
+          <button id="pick-files" class="btn" type="button">Choose files</button>
+          <button id="add-by-path" class="btn btn-quiet" type="button" title="Reference a large local file without uploading">Add by path</button>
+        </div>
+        <label class="lang-default">
+          Language for new sources
+          <select id="default-language"></select>
+        </label>
+      </div>
+      <input id="file-input" type="file" multiple hidden>
+    </div>
+    <div id="upload-progress" class="upload-progress" hidden></div>
+    <ul id="source-list" class="source-list" aria-live="polite"></ul>
+  </aside>
+
+  <section class="chat-pane">
+    <div id="message-list" class="message-list" aria-live="polite">
+      <div class="empty-state" id="chat-empty">
+        <h3>Add sources, then tell raida what to do with them.</h3>
+        <p>Example: "Summarize these three sources into one article of about 800 words, with a short intro and a list of open questions."</p>
+        <p class="muted">Everything runs on this Mac. Nothing leaves the machine.</p>
+      </div>
+    </div>
+    <form id="composer" class="composer">
+      <textarea id="instruction" rows="3" placeholder="Instruction for the sources in this session" aria-label="Instruction"></textarea>
+      <div class="composer-row">
+        <label class="checkbox"><input id="ready-only" type="checkbox"> Run now with ready sources only</label>
+        <div class="composer-actions">
+          <button id="cancel-run" class="btn btn-quiet" type="button" hidden>Stop</button>
+          <button id="send" class="btn btn-primary" type="submit">Run</button>
+        </div>
+      </div>
+    </form>
+  </section>
+</main>
+
+<dialog id="path-dialog" class="dialog">
+  <form method="dialog" id="path-form">
+    <h3>Add by path</h3>
+    <p class="muted">One absolute path per line. Folders must be listed in <code>paths.allowed_roots</code> in raida.toml.</p>
+    <textarea id="path-input" rows="4" placeholder="/Users/you/Movies/interview.mp4"></textarea>
+    <div class="dialog-actions">
+      <button class="btn btn-quiet" value="cancel" type="button" id="path-cancel">Cancel</button>
+      <button class="btn btn-primary" value="ok" type="submit">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="text-dialog" class="dialog dialog-wide">
+  <div class="dialog-head">
+    <h3 id="text-dialog-title">Processed text</h3>
+    <button class="btn btn-quiet" type="button" id="text-close">Close</button>
+  </div>
+  <pre id="text-dialog-body" class="text-preview"></pre>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
