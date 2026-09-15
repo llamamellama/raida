@@ -1,0 +1,45 @@
+# Copy to raida.toml and edit. Every value except llm.model has a default.
+# Environment overrides: RAIDA_<SECTION>__<KEY>, e.g. RAIDA_LLM__MODEL="gpt-oss:120b".
+
+log_level = "INFO"
+
+[llm]
+backend = "ollama"                   # "ollama" | "openai_compatible" | "fake"
+base_url = "http://127.0.0.1:11434"  # llama-server: http://127.0.0.1:8080, LM Studio: http://127.0.0.1:1234
+model = "gpt-oss:120b"               # REQUIRED. Must already be pulled locally.
+synthesis_budget_tokens = 64000      # inputs above this use map-reduce
+output_reserve_tokens = 8192
+keep_alive = "1h"
+temperature = 0.3
+
+[transcribe]
+backend = "parakeet"                 # "parakeet" | "whisper" | "apple" | "fake"
+parakeet_model = "nvidia/parakeet-tdt-0.6b-v3"
+whisper_model = "mlx-community/whisper-large-v3-mlx"
+language_detection = true
+allow_model_download = false         # set true once, online, to fetch weights; then back to false
+
+[ocr]
+enabled = true
+languages = ["en-US"]
+dpi = 300
+
+[pdf]
+extractor = "pymupdf4llm"            # or "pypdfium2" for a permissive-license-only stack
+
+[paths]
+# data_dir = "~/Library/Application Support/raida"
+# allowed_roots = ["~/Movies", "~/Downloads"]   # for "add by path" without uploading
+
+[server]
+host = "127.0.0.1"
+port = 8765
+open_browser = true
+
+[workers]
+cpu = "auto"                         # performance cores, capped at 6
+gpu = 1                              # concurrent transcriptions; keep at 1 unless measured
+llm = 1
+
+[export]
+pdf_renderer = "auto"                # "weasyprint" | "fpdf2" | "auto"

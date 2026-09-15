@@ -1,0 +1,28 @@
+# Agent instructions for raida
+
+Read `docs/architecture.md` before changing code. The decisions that shape this repo are in
+`docs/adr/`.
+
+## Conventions
+
+- Python 3.12, managed with `uv`. Run everything through `uv run`.
+- Exact-pinned dependencies in `pyproject.toml`; `uv.lock` is committed. Add a dependency only
+  with a version you tested, after checking it is maintained.
+- Fail fast: validate at boundaries, raise with clear messages, no silent defaults for values
+  that must be configured (`llm.model` is the canonical example).
+- Logs are JSON lines on stdout. Never write log files.
+- No emojis anywhere: code, comments, docs, commit messages, PR text.
+- snake_case Python modules; kebab-case markdown filenames; ADRs as `docs/adr/NNNN-slug.md`.
+- Every user-visible change updates `README.md` in the same commit.
+- Tests must pass on Linux CI without MLX or Ollama: keep Apple-only imports lazy and use the
+  fake LLM and fake transcriber backends in tests.
+
+## Layout
+
+- `src/raida/api` HTTP routes and SSE. `src/raida/pipeline` scheduler and per-kind stages.
+- `src/raida/transcribe` speech-to-text backends. `src/raida/llm` model backends and synthesis.
+- `src/raida/export` txt/md/pdf/docx renderers. `src/raida/web` static frontend.
+
+## Commands
+
+- `make doctor`, `make dev`, `make test`, `make lint`, `make fmt`, `make fixtures`.

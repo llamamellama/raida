@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# raida
+raida.toml
+*.sqlite3
+*.sqlite3-*
+.raida-data/

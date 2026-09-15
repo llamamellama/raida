@@ -1,0 +1,81 @@
+[project]
+name = "raida"
+version = "0.1.0"
+description = "Offline harness: ingest text, PDF, audio and video sources in parallel, synthesize with a local LLM, export txt/md/pdf/docx."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn==0.53.0",
+  "sse-starlette==3.4.11",
+  "pydantic==2.13.5",
+  "python-multipart==0.0.32",
+  "httpx==0.28.1",
+  "pymupdf4llm==1.28.2",
+  "pymupdf==1.28.2",
+  "pypdfium2==5.13.0",
+  "pdfplumber==0.11.10",
+  "pillow==12.3.0",
+  "charset-normalizer==3.5.1",
+  "python-docx==1.2.0",
+  "webvtt-py==0.5.1",
+  "markdown-it-py==4.2.0",
+  "mdit-py-plugins==0.6.1",
+  "weasyprint==70.0",
+  "fpdf2==2.8.8",
+  "huggingface-hub==1.31.0",
+]
+
+[project.optional-dependencies]
+# Apple Silicon only: MLX transcription backends and Apple Vision OCR.
+mac = [
+  "parakeet-mlx==0.5.2; sys_platform == 'darwin'",
+  "mlx-whisper==0.4.3; sys_platform == 'darwin'",
+  "ocrmac==1.0.1; sys_platform == 'darwin'",
+]
+# Bundled ffmpeg binary for machines without Homebrew ffmpeg (also used by CI).
+bundled-ffmpeg = [
+  "imageio-ffmpeg==0.6.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "ruff==0.16.7",
+  "pre-commit==4.6.2",
+  "imageio-ffmpeg==0.6.0",
+]
+
+[project.scripts]
+raida = "raida.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "raida"
+module-root = "src"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC", "N", "W"]
+ignore = ["RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "mac_models: needs real MLX models and a running Ollama on a Mac (set RAIDA_REAL_MODELS=1)",
+]
