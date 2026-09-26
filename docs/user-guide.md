@@ -170,7 +170,8 @@ Options, in order of preference:
 | Status strip says the model is not pulled | Run `ollama pull <model>` with the name from `raida.toml` |
 | Status strip says the model is not loaded | Normal before the first request. Make sure `make ollama` is running |
 | The browser cannot connect | `make dev` is not running, or the port is taken; check Window 2 |
-| A recording fails with "needs an explicit language" | Pick the language under "Language for new sources" and click Re-run |
+| A recording fails with "needs a language and language detection is off" | Pick the language on the source card, or under "Language for new sources" before adding media. The source re-runs on its own |
+| A recording fails with "Downloading required assets" and `CancellationError` | This Mac has no Apple recognition assets for that language. Add it under System Settings > Keyboard > Dictation, or pick an installed language. "Chinese" transcribes Mandarin into Simplified characters; ask for Traditional characters in your instruction if you want them in the answer |
 | The answer starts after a long pause | The model is reasoning first. Wait, or set `llm.think = false` for a model that supports it |
 | The answer is cut off | Raise `llm.output_reserve_tokens` in `raida.toml` (16384 is generous) |
 | Slow, and the strip shows less than 100% GPU | The model does not fit in GPU memory. Use a smaller model or raise the cap as described in `model-setup.md` |

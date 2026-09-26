@@ -63,6 +63,25 @@ class TranscriberRegistry:
         primary = self.primary()
         if primary.supports_language(language):
             return primary
+        tc = self.config.transcribe
+        if language is None and not tc.language_detection:
+            raise TranscriberError(
+                f"The {primary.name} transcription backend needs a language and language "
+                "detection is off (transcribe.language_detection = false). Choose the language "
+                "for this source, or under 'Language for new sources' before adding media, then "
+                "click Re-run."
+            )
+        if (
+            tc.backend != "fake"
+            and not tc.allow_model_download
+            and not _weights_cached(tc.whisper_model, self.config)
+        ):
+            shown = base_language(language) or "unknown"
+            raise TranscriberError(
+                f"Language '{shown}' is not supported by the {primary.name} backend, and the "
+                f"Whisper fallback ({tc.whisper_model}) is not downloaded. Choose a language the "
+                "backend supports, or run scripts/pull-models.sh once while online."
+            )
         fallback = self.fallback()
         log.info(
             "transcriber_fallback",

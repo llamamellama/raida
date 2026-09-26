@@ -143,6 +143,14 @@ Layout: `src/raida/api` (routes, SSE), `src/raida/pipeline` (scheduler, stages),
   variable when calling `uv run raida serve` directly.
 - Scanned PDF fails with an OCR message: OCR uses Apple Vision and needs `uv sync --extra mac`.
 - A source is stuck: cancel it and re-run; the cache means finished work is not repeated.
+- A recording fails with "needs a language and language detection is off": the `apple`
+  backend cannot detect languages. Pick the language on the source (or under "Language for new
+  sources" before adding media); the source re-runs on its own.
+- `yap` prints "Downloading required assets" and then `CancellationError`: the Apple engine has
+  no recognition assets for that language on this Mac and could not fetch them. Add the language
+  under System Settings > Keyboard > Dictation (which downloads them), or pick an installed one.
+  Note that "Chinese" maps to the `zh-CN` locale, so transcripts come out in Simplified
+  characters; ask for Traditional characters in the instruction if the answer should use them.
 - Media with no speech (silence, music, a test tone) becomes a ready source with an empty
   transcript, not a failure.
 - A folder literally named `~` appeared next to the app: an earlier build did not expand the
