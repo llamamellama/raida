@@ -28,6 +28,9 @@ same file is never transcribed twice. When the combined sources exceed the confi
 budget, raida condenses each source with the instruction in mind, then writes the final answer
 from the condensed notes (map-reduce); otherwise it puts everything into one prompt.
 
+New here? `docs/user-guide.md` walks through installing, starting and using the app without
+reading the rest of this file.
+
 Design and decisions: `docs/architecture.md`, `docs/adr/`. Model choices: `docs/model-setup.md`.
 Research behind the choices, with sources: `docs/landscape-2026.md`.
 
