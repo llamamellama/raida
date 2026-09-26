@@ -68,6 +68,17 @@ async def test_parallel_ingest_all_kinds(client: httpx.AsyncClient) -> None:
     assert "[p. 1]" in pdf_text and "[p. 2]" in pdf_text
 
 
+async def test_regional_language_code_reaches_the_transcriber(client: httpx.AsyncClient) -> None:
+    """'zh-TW' must not be reduced to 'zh' on the way to the backend: the Apple engine writes
+    Traditional or Simplified characters depending on the exact locale."""
+    sid = await _session(client)
+    (src,) = await _upload(client, sid, "tone.wav", language="zh-TW")
+    done = await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    assert done["status"] == "ready", done["error"]
+    assert done["language"] == "zh-TW"
+    assert done["meta"]["detected_language"] == "zh-TW"
+
+
 async def test_cache_hit_on_same_file(client: httpx.AsyncClient) -> None:
     sid = await _session(client)
     first = (await _upload(client, sid, "notes.md"))[0]

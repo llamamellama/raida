@@ -342,7 +342,9 @@ class Scheduler:
             async with self.resources.subprocess:
                 await media.extract_wav(ffmpeg, path, wav)
         duration = await asyncio.to_thread(media.wav_duration_seconds, wav)
-        language = base_language(source.language)
+        # Keep the code as chosen ("zh-TW"), not just its base: backends that distinguish
+        # regional variants need it; the others normalize it themselves.
+        language: str | None = source.language if base_language(source.language) else None
         detected: str | None = None
         if language is None:
             detector = self.transcribers.detector()
@@ -352,7 +354,7 @@ class Scheduler:
                     detected = await self.resources.run_blocking(
                         detector.detect_language, wav, self.config.transcribe.detection_seconds
                     )
-                language = base_language(detected)
+                language = detected if base_language(detected) else None
         transcriber = self.transcribers.route(language)
         await self._stage(source, "transcribing", "gpu", 0.15)
         report = self._progress_reporter(source, "transcribing", 0.15, 0.95)
