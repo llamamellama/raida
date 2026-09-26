@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from raida.config import LlmConfig
-from raida.llm.base import ChatMessage, GenerationOptions, LlmError, Usage
+from raida.llm.base import ChatMessage, GenerationOptions, LlmError, ReasoningCallback, Usage
 from raida.llm.tokens import estimate_tokens
 from raida.models import ComponentStatus
 
@@ -24,6 +24,9 @@ def _same_model(a: str, b: str) -> bool:
 
 class OllamaBackend:
     name = "ollama"
+    # Ollama reuses the prompt prefix of the request it served last, but with one slot every
+    # note-taking call evicts it, so preparing sessions in advance would be wasted work.
+    prompt_cache = False
 
     def __init__(self, config: LlmConfig) -> None:
         self.config = config
@@ -50,12 +53,28 @@ class OllamaBackend:
                 "temperature": options.temperature,
             },
         }
-        if self.config.think is not None:
-            payload["think"] = self.config.think
+        think = self._think(options.think)
+        if think is not None:
+            payload["think"] = think
         return payload
 
+    def _think(self, requested: bool | None) -> bool | str | None:
+        """The configured llm.think, or off when a call asks for no reasoning. Unset config
+        means the model may be thinking-only, where think=false leaks the reasoning into the
+        answer, so a request for no reasoning is ignored then."""
+        configured = self.config.think
+        if configured is None or requested is None:
+            return configured
+        if requested is False and isinstance(configured, str):
+            return "low"  # gpt-oss cannot switch reasoning off; low is the least
+        return requested if requested is False else configured
+
     async def stream_chat(
-        self, messages: list[ChatMessage], options: GenerationOptions, usage: Usage | None = None
+        self,
+        messages: list[ChatMessage],
+        options: GenerationOptions,
+        usage: Usage | None = None,
+        on_reasoning: ReasoningCallback | None = None,
     ) -> AsyncIterator[str]:
         payload = self._payload(messages, options, stream=True)
         try:
@@ -69,7 +88,14 @@ class OllamaBackend:
                     chunk = json.loads(line)
                     if chunk.get("error"):
                         raise LlmError(f"Ollama error: {chunk['error']}")
-                    delta = chunk.get("message", {}).get("content", "")
+                    message = chunk.get("message", {})
+                    thinking = message.get("thinking", "")
+                    if thinking:
+                        if usage is not None:
+                            usage.reasoning_tokens += 1
+                        if on_reasoning is not None:
+                            on_reasoning(thinking)
+                    delta = message.get("content", "")
                     if delta:
                         yield delta
                     if chunk.get("done"):
@@ -112,6 +138,13 @@ class OllamaBackend:
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise LlmError(f"Model returned invalid JSON: {content[:200]}") from exc
+
+    async def prefill(self, messages: list[ChatMessage], options: GenerationOptions) -> Usage:
+        usage = Usage()
+        short = GenerationOptions(num_ctx=options.num_ctx, max_tokens=1, temperature=0.0)
+        async for _ in self.stream_chat(messages, short, usage):
+            pass
+        return usage
 
     async def count_tokens(self, text: str) -> int:
         return estimate_tokens(text, self.config.chars_per_token)

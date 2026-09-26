@@ -1,5 +1,6 @@
--- raida schema, version 2. Applied to fresh databases via PRAGMA user_version; existing
--- databases are upgraded step by step in Database.migrate (v2 added sessions.title_auto).
+-- raida schema, version 3. Applied to fresh databases via PRAGMA user_version; existing
+-- databases are upgraded step by step in Database.migrate (v2 added sessions.title_auto,
+-- v3 added messages.full_text and the notes table).
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS messages (
     status               TEXT NOT NULL,
     strategy             TEXT,
     run_with_ready_only  INTEGER NOT NULL DEFAULT 0,
+    full_text            INTEGER NOT NULL DEFAULT 0,
     token_usage          TEXT NOT NULL DEFAULT '{}',
     error                TEXT,
     created_at           TEXT NOT NULL,
@@ -86,4 +88,16 @@ CREATE TABLE IF NOT EXISTS condensations (
     model             TEXT NOT NULL,
     text              TEXT NOT NULL,
     created_at        TEXT NOT NULL
+);
+
+-- Notes taken on a processed document when it became ready; keyed by processed-document key,
+-- model and notes version, so every session using the file shares them.
+CREATE TABLE IF NOT EXISTS notes (
+    cache_key       TEXT PRIMARY KEY,
+    sha256          TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    overview        TEXT NOT NULL,
+    sections        TEXT NOT NULL DEFAULT '[]',
+    token_estimate  INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
 );

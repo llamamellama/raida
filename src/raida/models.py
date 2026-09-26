@@ -17,6 +17,7 @@ SourceStatus = Literal[
     "transcribing",
     "rendering",
     "ocr",
+    "noting",
     "ready",
     "failed",
     "cancelled",
@@ -27,7 +28,9 @@ MessageRole = Literal["user", "assistant"]
 MessageStatus = Literal[
     "pending", "waiting_for_sources", "streaming", "done", "failed", "cancelled"
 ]
-Strategy = Literal["single_shot", "map_reduce"]
+# single_shot: every source in full; notes: long sources through their notes plus passages found
+# for the question; map_reduce: full text condensed for the instruction first.
+Strategy = Literal["single_shot", "notes", "map_reduce"]
 ExportFormat = Literal["txt", "md", "pdf", "docx"]
 
 ACTIVE_SOURCE_STATUSES: frozenset[str] = frozenset(
@@ -39,6 +42,7 @@ ACTIVE_SOURCE_STATUSES: frozenset[str] = frozenset(
         "transcribing",
         "rendering",
         "ocr",
+        "noting",
     }
 )
 TERMINAL_SOURCE_STATUSES: frozenset[str] = frozenset({"ready", "failed", "cancelled"})
@@ -104,6 +108,7 @@ class LibraryEntry(BaseModel):
     stored_path: str
     status: SourceStatus
     token_estimate: int | None = None
+    notes_ready: bool = False
     session_ids: list[str] = Field(default_factory=list)
     last_used_at: str
 
@@ -149,6 +154,7 @@ class Message(BaseModel):
     status: MessageStatus
     strategy: Strategy | None = None
     run_with_ready_only: bool = False
+    full_text: bool = False  # read every source in full instead of long sources' notes
     token_usage: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     created_at: str
@@ -183,6 +189,32 @@ class ProcessedSource(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     text_markdown: str
     token_estimate: int
+
+
+class NoteSection(BaseModel):
+    start: str = ""  # first anchor of the excerpt, e.g. "[00:00:00]" or "[p. 3]"
+    end: str = ""  # last anchor of the excerpt
+    text: str
+
+
+class SourceNotes(BaseModel):
+    """Notes on one processed document, shared by every session that uses the file."""
+
+    key: str
+    sha256: str
+    model: str
+    overview: str
+    sections: list[NoteSection]
+    token_estimate: int
+    created_at: str
+
+    def markdown(self) -> str:
+        parts = [self.overview.strip()] if self.overview.strip() else []
+        for section in self.sections:
+            ends = (section.start, section.end if section.end != section.start else "")
+            span = " - ".join(a for a in ends if a)
+            parts.append((f"## {span}\n\n" if span else "") + section.text.strip())
+        return "\n\n".join(parts) + "\n"
 
 
 class SessionDetail(BaseModel):

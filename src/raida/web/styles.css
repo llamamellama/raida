@@ -60,6 +60,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .progress.indeterminate > div { width: 30%; animation: slide 1.2s infinite linear; }
 @keyframes slide { from { transform: translateX(-100%);} to { transform: translateX(400%);} }
 .source-error { color: var(--danger); font-size: 12px; white-space: pre-wrap; }
+.source-warning { color: var(--warn); font-size: 12px; }
 .source-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .source-actions select { padding: 2px 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); font-size: 12px; }
 
@@ -95,6 +96,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .composer-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .composer-actions { display: flex; gap: 8px; }
 .checkbox { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.composer-options { display: flex; gap: 16px; flex-wrap: wrap; }
 
 .btn { padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; }
 .btn:hover { border-color: var(--accent); }
@@ -116,6 +118,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .library-item .library-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .library-item.in-session { opacity: .6; }
 .text-preview { max-height: 70vh; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 10px; border-radius: 6px; }
+.notes-preview { white-space: normal; font-family: var(--sans); font-size: 14px; }
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-size: 13px; max-width: 80vw; z-index: 20; }
 .toast.error { background: var(--danger); color: #fff; }

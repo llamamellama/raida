@@ -54,6 +54,7 @@
     <div id="message-list" class="message-list" aria-live="polite">
       <div class="empty-state" id="chat-empty">
         <h3>Add sources, then tell raida what to do with them.</h3>
+        <p>Files are transcribed and noted as soon as they are added, and stay in the library for every session.</p>
         <p>Example: "Summarize these three sources into one article of about 800 words, with a short intro and a list of open questions."</p>
         <p class="muted">Everything runs on this Mac. Nothing leaves the machine.</p>
       </div>
@@ -61,7 +62,10 @@
     <form id="composer" class="composer">
       <textarea id="instruction" rows="3" placeholder="Instruction for the sources in this session" aria-label="Instruction"></textarea>
       <div class="composer-row">
-        <label class="checkbox"><input id="ready-only" type="checkbox"> Run now with ready sources only</label>
+        <div class="composer-options">
+          <label class="checkbox"><input id="ready-only" type="checkbox"> Run now with ready sources only</label>
+          <label class="checkbox" title="Read every source in full instead of the notes of long sources. Slower: minutes for several long recordings."><input id="full-text" type="checkbox"> Read full text (slower, every detail)</label>
+        </div>
         <div class="composer-actions">
           <button id="cancel-run" class="btn btn-quiet" type="button" hidden>Stop</button>
           <button id="send" class="btn btn-primary" type="submit">Run</button>
@@ -102,6 +106,7 @@
     <button class="btn btn-quiet" type="button" id="text-close">Close</button>
   </div>
   <pre id="text-dialog-body" class="text-preview"></pre>
+  <div id="text-dialog-md" class="text-preview message-body notes-preview" hidden></div>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>

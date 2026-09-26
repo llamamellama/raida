@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 ENV_PREFIX = "RAIDA_"
 CONFIG_ENV_VAR = "RAIDA_CONFIG"
@@ -41,11 +41,21 @@ class StrictModel(BaseModel):
 
 
 class LlmConfig(StrictModel):
-    backend: Literal["ollama", "openai_compatible", "fake"] = "ollama"
+    backend: Literal["llama_server", "ollama", "openai_compatible", "fake"] = "ollama"
     base_url: str = "http://127.0.0.1:11434"
     model: str = Field(min_length=1, description="Model name as known to the local server.")
     api_key: str = "raida-local"
+    # Largest prompt for an answer that reads the full text of the sources ("Read full text");
+    # above it the sources are condensed for the instruction first (map-reduce).
     synthesis_budget_tokens: int = Field(default=64_000, ge=4_000)
+    # Largest prompt for a normal answer, which reads each long source's notes. Reading a prompt
+    # costs time that grows faster than its length (about 30 s for 16k tokens, 100 s for 32k
+    # and 14 minutes for 100k with a 30B model on an M2 Max). Sessions are read ahead when
+    # opened, so this is paid before the question on a server with a prompt cache. Notes of
+    # four two-hour recordings take about 19k tokens.
+    interactive_budget_tokens: int = Field(default=32_000, ge=2_000)
+    # Verbatim passages found for each question in long sources, on top of their notes; 0 = off.
+    passage_budget_tokens: int = Field(default=2_000, ge=0)
     output_reserve_tokens: int = Field(default=8_192, ge=512)
     prompt_overhead_tokens: int = Field(default=2_048, ge=256)
     condensation_target_tokens: int = Field(default=6_000, ge=500)
@@ -57,20 +67,47 @@ class LlmConfig(StrictModel):
     request_timeout_s: float = Field(default=3600.0, gt=0)
     chars_per_token: float = Field(default=3.7, gt=1.0)
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    # Ollama only. Reasoning models stream their reasoning in a separate field that raida does
-    # not show, so it only costs time and output budget. False turns it off for hybrid models
-    # with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6); "low" | "medium" | "high" sets
-    # the effort for gpt-oss. Thinking-only tags (Qwen3 Thinking-2507) ignore False and then
-    # leak their reasoning into the answer, so leave it None for them (server default).
+    # Reasoning before answers. Reasoning models stream it in a separate field that raida does
+    # not show, so it costs time before the first word (about 25 s for 1,000 tokens at 25k
+    # context on an M2 Max) and buys better-structured answers. False answers without it: with
+    # llama-server for any model (raida closes the reasoning block itself); with Ollama only for
+    # hybrid models with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6), because Ollama's
+    # thinking-only tags (Qwen3 Thinking-2507) then leak their reasoning into the answer, so
+    # leave it None for them. "low" | "medium" | "high" sets the effort for gpt-oss on Ollama.
     think: bool | Literal["low", "medium", "high"] | None = None
     # Name a session after its first answer (one extra short model call per session).
     suggest_titles: bool = True
+
+    @model_validator(mode="after")
+    def _budgets_consistent(self) -> LlmConfig:
+        if self.interactive_budget_tokens <= self.synthesis_budget_tokens:
+            return self
+        if "interactive_budget_tokens" in self.model_fields_set:
+            raise ValueError(
+                f"interactive_budget_tokens ({self.interactive_budget_tokens}) must not exceed "
+                f"synthesis_budget_tokens ({self.synthesis_budget_tokens})"
+            )
+        # Only the default is larger: a small synthesis budget caps both.
+        self.interactive_budget_tokens = self.synthesis_budget_tokens
+        return self
 
     @property
     def num_ctx(self) -> int:
         return (
             self.synthesis_budget_tokens + self.output_reserve_tokens + self.prompt_overhead_tokens
         )
+
+
+class NotesConfig(StrictModel):
+    """Notes taken on each long source as soon as its text is ready, reused by every session."""
+
+    enabled: bool = True
+    # Sources shorter than this are given to the model in full and get no notes.
+    min_source_tokens: int = Field(default=3_000, ge=500)
+    # Size of the excerpt behind each set of notes (about 25 minutes of speech).
+    section_tokens: int = Field(default=4_000, ge=1_000, le=32_000)
+    # Length of the notes relative to their excerpt.
+    ratio: float = Field(default=0.18, gt=0.02, le=0.6)
 
 
 class TranscribeConfig(StrictModel):
@@ -123,6 +160,9 @@ class WorkersConfig(StrictModel):
     cpu: int | Literal["auto"] = "auto"
     gpu: int = Field(default=1, ge=1, le=4)
     llm: int = Field(default=1, ge=1, le=8)
+    # Concurrent background model calls (notes, preparing sessions). They pause whenever an
+    # answer is being written.
+    llm_background: int = Field(default=1, ge=1, le=4)
     subprocess: int = Field(default=2, ge=1, le=16)
 
 
@@ -137,6 +177,7 @@ class ExportConfig(StrictModel):
 class Config(StrictModel):
     llm: LlmConfig
     transcribe: TranscribeConfig = TranscribeConfig()
+    notes: NotesConfig = NotesConfig()
     ocr: OcrConfig = OcrConfig()
     pdf: PdfConfig = PdfConfig()
     paths: PathsConfig = PathsConfig()

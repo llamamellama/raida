@@ -41,6 +41,9 @@ async def test_health(client: httpx.AsyncClient) -> None:
 async def test_index_served(client: httpx.AsyncClient) -> None:
     r = await client.get("/")
     assert r.status_code == 200 and "<title>raida</title>" in r.text
+    assert r.headers["cache-control"] == "no-cache"
+    script = await client.get("/static/app.js")
+    assert script.status_code == 200 and script.headers["cache-control"] == "no-cache"
     assert (await client.get("/static/vendor/marked.umd.js")).status_code == 200
 
 
@@ -240,11 +243,15 @@ async def test_map_reduce_when_over_budget(tmp_path: Path) -> None:
         ready = await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
         assert ready["token_estimate"] > 4000
         m = (
-            await client.post(f"/api/sessions/{sid}/messages", json={"content": "Summarize."})
+            await client.post(
+                f"/api/sessions/{sid}/messages",
+                json={"content": "Summarize.", "full_text": True},
+            )
         ).json()
         done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
         assert done["status"] == "done", done
         assert done["strategy"] == "map_reduce"
+        assert done["full_text"] is True
         fake = app.state.raida.scheduler.llm
         assert len(fake.calls) > 2  # condensation calls plus the final synthesis
 
@@ -289,3 +296,143 @@ async def test_cancel_message_and_delete_session(client: httpx.AsyncClient) -> N
     assert r.status_code == 200 and r.json()["status"] in ("cancelled", "done")
     assert (await client.delete(f"/api/sessions/{sid}")).status_code == 204
     assert (await client.get(f"/api/sessions/{sid}")).status_code == 404
+
+
+def _long_transcript(paragraphs: int = 60) -> bytes:
+    lines = [
+        f"[00:{i // 60:02d}:{i % 60:02d}] Paragraph {i} is about topic {i % 5}. " + "words " * 60
+        for i in range(paragraphs)
+    ]
+    return "\n\n".join(lines).encode()
+
+
+def _notes_config(tmp_path: Path, **extra: str):
+    from tests.conftest import make_config
+
+    return make_config(
+        tmp_path,
+        RAIDA_NOTES__MIN_SOURCE_TOKENS="1000",
+        RAIDA_NOTES__SECTION_TOKENS="1500",
+        RAIDA_LLM__INTERACTIVE_BUDGET_TOKENS="4000",
+        RAIDA_LLM__PASSAGE_BUDGET_TOKENS="500",
+        **extra,
+    )
+
+
+async def test_long_source_is_noted_once_and_answered_from_notes(tmp_path: Path) -> None:
+    from raida.api.app import create_app
+
+    app = create_app(_notes_config(tmp_path))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        fake = app.state.raida.scheduler.llm
+        sid = await _session(client)
+        r = await client.post(
+            f"/api/sessions/{sid}/sources", files=[("files", ("talk.md", _long_transcript()))]
+        )
+        src = await wait_for(client, f"/api/sources/{r.json()[0]['id']}", TERMINAL)
+        assert src["status"] == "ready", src["error"]
+        assert src["meta"]["notes"]["status"] == "done" and src["meta"]["notes"]["sections"] > 1
+        notes = (await client.get(f"/api/sources/{src['id']}/notes")).text
+        assert "Fake overview" in notes and "Fake note 1" in notes and "## [00:00:00]" in notes
+        note_calls = [c for c in fake.calls if "<excerpt>" in c[-1]["content"]]
+        assert note_calls and all(o.think is False for o in fake.options[: len(note_calls)])
+
+        # A second session reuses the processed text and the notes: no new note calls.
+        calls_before = len(fake.calls)
+        sid2 = await _session(client)
+        added = await client.post(
+            f"/api/sessions/{sid2}/sources/from-library", json={"sha256s": [src["sha256"]]}
+        )
+        again = await wait_for(client, f"/api/sources/{added.json()[0]['id']}", TERMINAL)
+        assert again["meta"]["notes"]["status"] == "done"
+        assert len(fake.calls) == calls_before
+
+        # The session was read into the prompt cache once its sources settled.
+        for _ in range(100):
+            if fake.prefills:
+                break
+            await asyncio.sleep(0.02)
+        assert fake.prefills and 'form="notes"' in fake.prefills[-1][1]["content"]
+
+        prepared = list(fake.prefills)
+        m = (
+            await client.post(
+                f"/api/sessions/{sid2}/messages", json={"content": "What is said about topic 3?"}
+            )
+        ).json()
+        done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+        assert done["status"] == "done", done
+        assert done["strategy"] == "notes"
+        answer_prompt = next(
+            c for c in reversed(fake.calls) if c[0]["content"].startswith("You are raida")
+        )
+        assert 'form="notes"' in answer_prompt[1]["content"]
+        assert '<excerpt source="1">' in answer_prompt[-1]["content"]
+        assert "topic 3" in answer_prompt[-1]["content"]
+        # The prefix read ahead is exactly the start of the answer's prompt.
+        assert prepared[-1][:-1] == answer_prompt[:-1]
+        # After the answer, the prefix with this turn in the history is read ahead too.
+        for _ in range(100):
+            if len(fake.prefills) > len(prepared):
+                break
+            await asyncio.sleep(0.02)
+        assert fake.prefills[-1][-2]["role"] == "assistant"
+        assert fake.prefills[-1][-2]["content"] == done["content"]
+
+
+async def test_long_source_without_notes_is_read_in_full(tmp_path: Path) -> None:
+    from raida.api.app import create_app
+
+    app = create_app(_notes_config(tmp_path, RAIDA_NOTES__ENABLED="false"))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        sid = await _session(client)
+        r = await client.post(
+            f"/api/sessions/{sid}/sources", files=[("files", ("talk.md", _long_transcript()))]
+        )
+        src = await wait_for(client, f"/api/sources/{r.json()[0]['id']}", TERMINAL)
+        assert "notes" not in src["meta"]
+        assert (await client.get(f"/api/sources/{src['id']}/notes")).status_code == 404
+        m = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Go"})).json()
+        done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+        assert done["status"] == "done", done
+        assert done["strategy"] == "single_shot"
+
+
+async def test_answers_and_titles_keep_the_instructions_chinese_script(
+    client: httpx.AsyncClient,
+) -> None:
+    fake = client.app.state.raida.scheduler.llm  # type: ignore[attr-defined]
+    sid = (await client.post("/api/sessions", json={})).json()["id"]
+    await _upload(client, sid, "notes.md", language="zh-TW")
+    m = (
+        await client.post(f"/api/sessions/{sid}/messages", json={"content": "請整理這些內容的重點"})
+    ).json()
+    done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+    assert done["status"] == "done", done
+    # The fake answers in Simplified; the stored answer is Traditional (Taiwan).
+    assert "我們的內容，頭髮" in done["content"] and "我们" not in done["content"]
+    answer_prompt = next(c for c in fake.calls if c[0]["content"].startswith("You are raida"))
+    assert answer_prompt[-1]["content"].endswith("（若以中文回答，請使用繁體字與臺灣用語。）")
+    title = ""
+    for _ in range(200):
+        title = (await client.get(f"/api/sessions/{sid}")).json()["session"]["title"]
+        if title.startswith("Fake title"):
+            break
+        await asyncio.sleep(0.02)
+    assert title == "Fake title 簡體標題"
+
+
+async def test_english_instruction_over_english_sources_is_left_as_written(
+    client: httpx.AsyncClient,
+) -> None:
+    sid = await _session(client)
+    await _upload(client, sid, "notes.md")
+    m = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Summarize"})).json()
+    done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+    assert "我们的内容" in done["content"]  # no Chinese script to follow: unchanged

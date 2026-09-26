@@ -15,13 +15,15 @@ router = APIRouter(prefix="/api", tags=["messages"])
 class MessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
     run_with_ready_only: bool = False
+    # Read every source in full instead of long sources' notes: slower, for maximum detail.
+    full_text: bool = False
 
 
 @router.post("/sessions/{session_id}/messages", response_model=Message, status_code=202)
 async def create_message(session_id: str, body: MessageCreate, state: State) -> Message:
     try:
         return await state.scheduler.submit_message(
-            session_id, body.content, body.run_with_ready_only
+            session_id, body.content, body.run_with_ready_only, body.full_text
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

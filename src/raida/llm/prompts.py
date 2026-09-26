@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import html
+import re
+from typing import Literal
 
 from raida.models import ProcessedSource
+
+SourceForm = Literal["full", "notes", "overview"]
 
 SYSTEM_PROMPT = """You are raida, a writing assistant that works only from the sources the user \
 provides. Rules:
 - Base every statement on the sources. Do not invent facts, names, numbers or quotes. If the \
 sources do not contain what the instruction asks for, say so plainly.
+- Long sources are given as detailed notes taken from their full text (form="notes"), or as a \
+short overview (form="overview"); verbatim excerpts found for the instruction may follow it. \
+Treat notes and excerpts as the source's content.
 - When you draw on a specific passage, cite it with the anchor that appears in the source text, \
-for example [p. 12] for a document page or [00:14:32] for a time code, together with the source \
-title when more than one source is present.
+notes or excerpt, for example [p. 12] for a document page or [00:14:32] for a time code, \
+together with the source title when more than one source is present.
 - Write in the same language as the user's instruction unless told otherwise, even when the \
 sources are in another language. For Chinese, match the instruction's script (Traditional or \
 Simplified).
@@ -31,7 +38,13 @@ set of notes. Remove duplication, keep every distinct fact and its anchor, keep 
 document order. Do not answer the instruction; only merge. Output plain Markdown."""
 
 
-def source_block(index: int, source: ProcessedSource, condensed: bool = False) -> str:
+def source_block(
+    index: int,
+    source: ProcessedSource,
+    condensed: bool = False,
+    form: SourceForm = "full",
+    body: str | None = None,
+) -> str:
     meta = source.meta
     attrs = [
         f'id="{index}"',
@@ -46,7 +59,10 @@ def source_block(index: int, source: ProcessedSource, condensed: bool = False) -
         attrs.append(f'language="{meta["detected_language"]}"')
     if condensed:
         attrs.append('condensed="true"')
-    return f"<source {' '.join(attrs)}>\n{source.text_markdown.strip()}\n</source>"
+    if form != "full":
+        attrs.append(f'form="{form}"')
+    text = source.text_markdown if body is None else body
+    return f"<source {' '.join(attrs)}>\n{text.strip()}\n</source>"
 
 
 def sources_message(sources: list[ProcessedSource], condensed: bool = False) -> str:
@@ -55,6 +71,68 @@ def sources_message(sources: list[ProcessedSource], condensed: bool = False) -> 
         " Long sources were condensed while preserving anchors." if condensed else ""
     )
     return intro + "\n\n" + "\n\n".join(blocks)
+
+
+def blocks_message(blocks: list[str]) -> str:
+    return (
+        "Here are the sources. Each is wrapped in a <source> tag with its id, title and kind."
+        "\n\n" + "\n\n".join(blocks)
+    )
+
+
+def instruction_message(instruction: str, excerpts: str) -> str:
+    """The final user turn: verbatim excerpts found for this instruction, then the instruction.
+    Excerpts sit here rather than in the sources so the sources stay a stable, cached prefix."""
+    if not excerpts:
+        return instruction.strip()
+    return (
+        "Verbatim excerpts from the full text of the sources, found for this instruction "
+        "(source ids as above):\n\n"
+        f"{excerpts}\n\nInstruction:\n{instruction.strip()}"
+    )
+
+
+NOTES_SYSTEM = """You take study notes on one excerpt of a longer source, a recording \
+transcript or a document, so that a later step can answer any question about the source from \
+your notes alone. Rules:
+- Write in the same language and script as the excerpt.
+- Keep every distinct point, teaching, argument, example, story, instruction, practice or \
+exercise, question and answer, name, number and date, in the order they occur.
+- Start each note with the anchor ([hh:mm:ss] or [p. N]) of the passage it comes from.
+- Quote short, memorable sentences verbatim in quotation marks.
+- Group the notes under short headings (Markdown ### headings) with bullet points below them.
+- A transcript comes from speech recognition: it has little punctuation and some misheard \
+words. Write what the speaker evidently meant; keep a name as heard when unsure.
+- No introduction, no commentary and no conclusions of your own."""
+
+OVERVIEW_SYSTEM = """You write the overview that opens a set of study notes on one source. \
+Say what the source is (for example a talk, a class, a meeting or a report; name the speakers \
+or authors if the notes do), then its main themes in order and its key takeaways. Write in the \
+same language and script as the notes. Plain prose, no headings, no anchors."""
+
+
+def length_hint(text: str, ratio: float) -> str:
+    """ "about N characters" for Chinese, Japanese and Korean, "about N words" otherwise."""
+    cjk = sum(1 for ch in text if "\u3040" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af")
+    if cjk > len(text) * 0.3:
+        return f"about {max(80, int(cjk * ratio))} characters"
+    return f"about {max(60, int(len(text.split()) * ratio))} words"
+
+
+def notes_user_message(
+    source: ProcessedSource, excerpt: str, part: int, total: int, length: str
+) -> str:
+    return (
+        f"Source: {source.title} ({source.kind}), excerpt {part} of {total}. "
+        f"Write the notes in {length}.\n\n<excerpt>\n{excerpt.strip()}\n</excerpt>"
+    )
+
+
+def overview_user_message(source: ProcessedSource, notes: str, length: str) -> str:
+    return (
+        f"Source: {source.title} ({source.kind}). Write the overview in {length}.\n\n"
+        f"<notes>\n{notes.strip()}\n</notes>"
+    )
 
 
 def condense_user_message(
@@ -82,13 +160,17 @@ def merge_user_message(
 TITLE_SYSTEM = """Name the session below. Return a title of at most 8 words (at most 12 \
 characters for Chinese, Japanese or Korean), in the same language and script as the \
 instruction. Name the subject matter, not the task: "Book club 248 and 249 notes", not \
-"Summary request". No quotes, no trailing punctuation."""
+"Summary request". Reply with the title only: no quotes, no label, no trailing punctuation."""
 
-TITLE_SCHEMA = {
-    "type": "object",
-    "properties": {"title": {"type": "string", "description": "Short title, at most 8 words"}},
-    "required": ["title"],
-}
+_TITLE_LABEL = re.compile(r"^(?:title|標題|标题)\s*[:：]\s*", re.IGNORECASE)
+
+
+def clean_title(text: str) -> str | None:
+    """First non-empty line of a model reply, without a label, quotes or Markdown marks."""
+    line = next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
+    line = _TITLE_LABEL.sub("", line.strip("#*` ").strip())
+    line = line.strip("\"'`“”「」『』 ").rstrip("。.!！")
+    return line[:120] or None
 
 
 def _hms(seconds: float) -> str:

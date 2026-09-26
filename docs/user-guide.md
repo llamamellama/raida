@@ -1,8 +1,10 @@
 # raida user guide
 
 raida turns a pile of files into one piece of writing, entirely on your Mac. Drop in documents,
-recordings and videos, type what you want (a summary, an article, meeting minutes, a comparison),
-and a local AI model writes the answer while you watch. Nothing is uploaded anywhere.
+recordings and videos whenever you have them: raida transcribes them and takes notes on them
+right away, and keeps them in a library any session can use. Then type what you want (a
+summary, an article, meeting minutes, a comparison), and a local AI model writes the answer
+while you watch. Nothing is uploaded anywhere.
 
 This guide is for people who want to use raida. Developers should read `../README.md` and
 `architecture.md` as well.
@@ -28,9 +30,9 @@ git clone <repository url> raida
 cd raida && ./scripts/setup-mac.sh
 ```
 
-The setup script installs Homebrew packages (ffmpeg, pango, uv, ollama), the Python environment,
-creates your personal configuration file `raida.toml`, starts Ollama and downloads the models.
-The download is the slow part.
+The setup script installs Homebrew packages (ffmpeg, pango, uv, llama.cpp, ollama), the Python
+environment, creates your personal configuration file `raida.toml`, and downloads the models
+with Ollama. The download is the slow part.
 
 When it finishes, check the installation:
 
@@ -42,14 +44,17 @@ Every line should read `[OK  ]`. If one does not, the message says what to insta
 
 ## 3. Start the app
 
-raida needs two things running: the model server (Ollama) and raida itself. Use two Terminal
-windows in the `raida` folder.
+raida needs two things running: the model server (llama-server, from llama.cpp) and raida
+itself. Use two Terminal windows in the `raida` folder.
 
-Window 1, the model server:
+Window 1, the model server, with the model name from `llm.model` in `raida.toml`:
 
 ```bash
-make ollama
+make llm MODEL=gpt-oss:120b
 ```
+
+It reads the weights Ollama downloaded; nothing is copied. If your `raida.toml` says
+`backend = "ollama"`, run `make ollama` here instead.
 
 Window 2, the app:
 
@@ -60,8 +65,9 @@ make dev
 Your browser opens at `http://127.0.0.1:8765`. The status strip under the title shows the model,
 the transcription engine, OCR and PDF export. A green item is ready; a red one tells you why not.
 
-The first request after starting loads the model into memory, which can take 10 to 60 seconds.
-After that it stays loaded for an hour of inactivity.
+The model server loads the model into memory when it starts, which can take 10 to 60 seconds.
+After an hour without requests it unloads it to give the memory back, and loads it again on the
+next request.
 
 To stop: press Ctrl+C in both windows.
 
@@ -73,9 +79,17 @@ Drag files onto the left pane, or click "Choose files". Supported: text, Markdow
 (including scanned pages, which are recognized with on-device OCR), Word documents, subtitle
 files (.srt, .vtt), and any audio or video ffmpeg can read.
 
-Each source shows its stage (extracting, decoding audio, transcribing, OCR) and a progress bar.
-Several files process at once. A file you have added before, in any session, is ready instantly
-because raida remembers processed content by file hash.
+Each source shows its stage (extracting, decoding audio, transcribing, OCR, taking notes) and a
+progress bar. Several files process at once. A file you have added before, in any session, is
+ready instantly because raida remembers processed content and notes by file hash.
+
+Long sources (more than a few pages, or more than a few minutes of speech) get notes as soon
+as their text is ready: raida splits them into sections of about 25 minutes of speech and writes
+anchored notes of about a fifth of their length, then a short overview. This is what lets later
+questions over several long files answer quickly. On an M2 Max a two-hour recording is ready
+about 3.5 minutes after you add it: one minute to transcribe, the rest for notes. The notes are
+taken in the background and pause whenever an answer is being written, so you can keep working.
+Click "View notes" on a source to read them.
 
 For very large videos, use "Add by path" instead of uploading: the file stays where it is. The
 folder must be listed under `paths.allowed_roots` in `raida.toml` (the default list contains
@@ -111,15 +125,33 @@ instructions say what to produce, for whom, and how long:
 If sources are still processing, the run waits for them. Tick "Run now with ready sources only"
 to skip the waiting ones.
 
-Write the instruction in whatever language you like. The answer comes back in the language and
-script of your instruction, whatever language the sources are in: an instruction in Traditional
-Chinese gets a Traditional Chinese answer about English recordings.
+A normal answer reads short sources in full and long ones through their notes, plus the passages
+of the full text that match your question. That is fast: when you open a session, raida reads
+its sources into the model's memory in advance (about a minute for four two-hour recordings,
+while you type), so the model starts on your question right away. It then thinks for up to about
+25 seconds before writing; set `llm.think = false` in `raida.toml` if you prefer the text to
+start at once, with somewhat less structure. If you ask before the advance reading has finished,
+or in a session with a new combination of files, the first answer waits for the reading (about a
+minute for three two-hour recordings). Tick "Read full text" when you need every detail of long
+sources, for example exact quotes from the whole of a recording. It reads everything word for
+word and takes minutes for several long recordings. The label on each answer says which way it
+was made ("from notes", "full text", "condensed then synthesized"), and the token count shows
+how much was already read in advance.
+
+Write the instruction in whatever language you like. The answer comes back in the language of
+your instruction, whatever language the sources are in: an instruction in English gets an
+English answer about Mandarin recordings, an instruction in Traditional Chinese a Traditional
+Chinese answer about English recordings. For Chinese, raida makes sure of the script: an
+instruction written in Traditional characters always gets Traditional characters (Taiwan usage
+when the recordings were set to "Chinese (Traditional)"), even when the model slips into
+Simplified, and the same for Simplified. To get the other script, say so in the instruction
+("請用簡體中文", "in Simplified Chinese").
 
 The answer streams in as formatted text with citations back to the sources, such as
-`[notes.md]` or `[p. 3]`. With a reasoning model, the first words can take a while to appear:
-the model thinks first and raida shows only the final answer. Long inputs take longer to read;
-inputs larger than the model's context budget are condensed source by source first, which shows
-as a "Condensing" stage.
+`[notes.md]`, `[p. 3]` or `[00:14:32]`. With a reasoning model, the first words can take a
+while to appear: the model thinks first (the line under the answer counts its thinking tokens)
+and raida shows only the final answer. With "Read full text", inputs larger than the model's
+context budget are condensed source by source first, which shows as a "Condensing" stage.
 
 You can keep the conversation going: follow-up instructions see the earlier answers.
 
@@ -148,16 +180,17 @@ every key with its default. The ones people change:
 
 | Key | What it does |
 | --- | --- |
-| `llm.model` | The model Ollama should use, as shown by `ollama list` |
-| `llm.think` | `false` turns off reasoning for models that support it, for faster answers; leave unset for thinking-only models |
+| `llm.model` | The model to use, as shown by `ollama list`; pass the same name to `make llm MODEL=...` |
+| `llm.think` | `false` makes answers start at once instead of after about half a minute of thinking, at some cost in structure. With the Ollama backend, only for models that support it; leave unset for thinking-only models there |
 | `transcribe.backend` | `parakeet` (default, best accuracy), `whisper` (all languages), `apple` (fastest, macOS 26+, needs an explicit language) |
 | `paths.allowed_roots` | Folders allowed for "Add by path" |
 | `server.port` | Change if 8765 is taken |
 
 Restart `make dev` after editing. `model-setup.md` explains which model fits which Mac.
 
-To switch models: `ollama pull <name>`, set `llm.model`, restart, and check the status strip
-says "100% GPU". Partial GPU means the model is too large for the machine; pick a smaller one.
+To switch models: `ollama pull <name>`, set `llm.model`, restart both windows with the new
+name (`make llm MODEL=<name>`). Notes are taken again for every long source with the new
+model, in the background.
 
 ## 7. If model downloads are blocked
 
@@ -179,12 +212,17 @@ Options, in order of preference:
 
 | What you see | What to do |
 | --- | --- |
-| Status strip says the model is not pulled | Run `ollama pull <model>` with the name from `raida.toml` |
-| Status strip says the model is not loaded | Normal before the first request. Make sure `make ollama` is running |
+| Status strip says the LLM server is unreachable | Start it in Window 1: `make llm MODEL=<model>` (or `make ollama` with the Ollama backend) |
+| Status strip says the server serves another model | Restart Window 1 with the name in `llm.model` |
+| Status strip says the model is not pulled (Ollama backend) | Run `ollama pull <model>` with the name from `raida.toml` |
+| A long source says "No notes" | The model server was not running when it was added. It still works, more slowly. Click Re-run, or restart the app: missing notes are taken in the background |
+| An answer from notes misses a detail | Ask again with "Read full text" ticked, or use the words spoken in the recording, which the passage search matches |
 | The browser cannot connect | `make dev` is not running, or the port is taken; check Window 2 |
 | A recording fails with "needs a language and language detection is off" | Pick the language on the source card, or under "Language for new sources" before adding media. The source re-runs on its own |
 | A recording fails with "Downloading required assets" and `CancellationError` | This Mac has no Apple recognition assets for that language and could not fetch them. Add it under System Settings > Keyboard > Dictation, or pick an installed language. raida already retries the transient form of this error |
 | Chinese transcript comes out in the wrong script | Pick "Chinese (Traditional)" for Traditional characters, "Chinese (Simplified)" for Simplified, or "Cantonese (Hong Kong)". Changing the language on a source re-transcribes it |
+| A Traditional Chinese transcript has wrong characters such as 外麵 or 鞦天 | It was made before raida corrected the Apple engine's character conversion. Click Re-run on the source |
+| An older answer is in Simplified Chinese although you asked in Traditional | It was written before raida held answers to the instruction's script. Ask again |
 | The answer starts after a long pause | The model is reasoning first. Wait, or set `llm.think = false` for a model that supports it |
 | The answer is cut off | Raise `llm.output_reserve_tokens` in `raida.toml` (16384 is generous) |
 | The run fails with "did not answer within llm.request_timeout_s" | The model was still reading a very long prompt when raida stopped waiting. Raise `llm.request_timeout_s` in `raida.toml`, or use fewer or shorter sources per question. The status under the answer shows how many tokens are being read |
@@ -203,5 +241,5 @@ uv run raida ask <session-id> "Summarize."   # run an instruction against a sess
 uv run raida export <message-id> --format docx --output answer.docx
 ```
 
-`process` prints the session id at the end; `ask` prints the message id. Both need Ollama
-running for `ask`.
+`process` prints the session id at the end; `ask` prints the message id. `ask`, and notes on
+long files in `process`, need the model server running.

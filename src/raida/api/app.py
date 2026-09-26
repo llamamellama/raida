@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from raida import __version__
@@ -62,6 +62,17 @@ def create_app(config: Config, initial_health: HealthReport | None = None) -> Fa
     app.include_router(sources.router)
     app.include_router(messages.router)
     app.include_router(exports.router)
+
+    @app.middleware("http")
+    async def _revalidate_ui(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Without this, browsers cache the UI's scripts heuristically for hours and run an old
+        # UI against a new server after an update. Revalidation is a cheap 304 on localhost.
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     root = web_root()
     app.mount("/static", StaticFiles(directory=root), name="static")

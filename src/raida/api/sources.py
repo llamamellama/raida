@@ -164,6 +164,18 @@ async def get_source_text(source_id: str, state: State) -> str:
     return await asyncio.to_thread(Path(source.processed_path).read_text, "utf-8")
 
 
+@router.get("/sources/{source_id}/notes", response_class=PlainTextResponse)
+async def get_source_notes(source_id: str, state: State) -> str:
+    """The notes taken on the source when it was added, as Markdown."""
+    source = await asyncio.to_thread(state.db.get_source, source_id)
+    if not source.processed_path:
+        raise HTTPException(status_code=409, detail=f"source is {source.status}, not ready")
+    notes = await state.scheduler.notes.load(Path(source.processed_path).stem)
+    if notes is None:
+        raise HTTPException(status_code=404, detail="this source has no notes")
+    return notes.markdown()
+
+
 @router.patch("/sources/{source_id}", response_model=Source)
 async def patch_source(source_id: str, body: LanguagePatch, state: State) -> Source:
     return await state.scheduler.set_language(source_id, body.language)

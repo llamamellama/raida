@@ -20,10 +20,12 @@ if [[ ! -x "$BREW" ]]; then
 fi
 export PATH="/opt/homebrew/bin:$PATH"
 
-echo "==> Homebrew packages (ffmpeg, pango for PDF export, uv, ollama)"
-"$BREW" list ffmpeg >/dev/null 2>&1 || "$BREW" install ffmpeg
-"$BREW" list pango  >/dev/null 2>&1 || "$BREW" install pango
-"$BREW" list uv     >/dev/null 2>&1 || "$BREW" install uv
+echo "==> Homebrew packages (ffmpeg, pango for PDF export, uv, llama.cpp, ollama)"
+"$BREW" list ffmpeg    >/dev/null 2>&1 || "$BREW" install ffmpeg
+"$BREW" list pango     >/dev/null 2>&1 || "$BREW" install pango
+"$BREW" list uv        >/dev/null 2>&1 || "$BREW" install uv
+# llama-server answers; Ollama downloads the weights, which llama-server reads in place.
+"$BREW" list llama.cpp >/dev/null 2>&1 || "$BREW" install llama.cpp
 if ! command -v ollama >/dev/null 2>&1; then
   # The formula (not the auto-updating app cask) keeps the install reproducible and offline.
   "$BREW" install ollama
@@ -70,9 +72,10 @@ uv run raida doctor || true
 
 cat <<MSG
 
-Done. Start the app with:
+Done. Start the model server and the app, each in its own terminal:
 
-  make dev          # or: uv run raida serve
+  make llm MODEL=${MODEL}   # llama-server on the weights Ollama downloaded
+  make dev                  # the app, at http://127.0.0.1:8765
 
-Ollama must be running (`ollama serve`) whenever raida runs.
+With llm.backend = "ollama" in raida.toml, run `make ollama` instead of `make llm`.
 MSG

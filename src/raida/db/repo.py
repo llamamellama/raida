@@ -23,13 +23,14 @@ from raida.models import (
     ProcessedCacheEntry,
     Session,
     Source,
+    SourceNotes,
     new_id,
     utc_now,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _JSON_FIELDS = {"meta", "token_usage"}
-_BOOL_FIELDS = {"managed", "run_with_ready_only", "title_auto"}
+_BOOL_FIELDS = {"managed", "run_with_ready_only", "title_auto", "full_text"}
 
 
 class NotFoundError(LookupError):
@@ -83,15 +84,24 @@ class Database:
             current = self._conn.execute("PRAGMA user_version").fetchone()[0]
             if current >= SCHEMA_VERSION:
                 return
+            schema = resources.files("raida.db").joinpath("schema.sql").read_text("utf-8")
             if current < 1:
-                schema = resources.files("raida.db").joinpath("schema.sql").read_text("utf-8")
                 self._conn.executescript(schema)
-            elif current < 2:
-                columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}
-                if "title_auto" not in columns:
-                    self._conn.execute(
-                        "ALTER TABLE sessions ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1"
-                    )
+            else:
+                if current < 2:
+                    columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}
+                    if "title_auto" not in columns:
+                        self._conn.execute(
+                            "ALTER TABLE sessions ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1"
+                        )
+                if current < 3:
+                    columns = {r[1] for r in self._conn.execute("PRAGMA table_info(messages)")}
+                    if "full_text" not in columns:
+                        self._conn.execute(
+                            "ALTER TABLE messages ADD COLUMN full_text INTEGER NOT NULL DEFAULT 0"
+                        )
+                    # Every statement is CREATE ... IF NOT EXISTS, so this adds only new tables.
+                    self._conn.executescript(schema)
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- generic helpers -------------------------------------------------------------------
@@ -214,6 +224,7 @@ class Database:
                     stored_path=source.stored_path,
                     status=source.status,
                     token_estimate=source.token_estimate,
+                    notes_ready=(source.meta.get("notes") or {}).get("status") == "done",
                     session_ids=[source.session_id],
                     last_used_at=source.updated_at,
                 )
@@ -365,6 +376,45 @@ class Database:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (cache_key, sha256, instruction_hash, model, text, utc_now()),
             )
+
+    def get_notes(self, cache_key: str) -> SourceNotes | None:
+        row = self._fetchone("SELECT * FROM notes WHERE cache_key = ?", (cache_key,))
+        if row is None:
+            return None
+        row["key"] = row.pop("cache_key")
+        row["sections"] = json.loads(row["sections"] or "[]")
+        return SourceNotes.model_validate(row)
+
+    def put_notes(self, notes: SourceNotes) -> None:
+        sections = [s.model_dump() for s in notes.sections]
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO notes "
+                "(cache_key, sha256, model, overview, sections, token_estimate, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    notes.key,
+                    notes.sha256,
+                    notes.model,
+                    notes.overview,
+                    json.dumps(sections, ensure_ascii=False),
+                    notes.token_estimate,
+                    notes.created_at,
+                ),
+            )
+
+    def sources_with_processed_path(self, processed_path: str) -> list[Source]:
+        rows = self._fetchall(
+            "SELECT * FROM sources WHERE processed_path = ? ORDER BY created_at", (processed_path,)
+        )
+        return [Source.model_validate(r) for r in rows]
+
+    def ready_sources(self) -> list[Source]:
+        rows = self._fetchall(
+            "SELECT * FROM sources WHERE status = 'ready' AND processed_path IS NOT NULL "
+            "ORDER BY created_at"
+        )
+        return [Source.model_validate(r) for r in rows]
 
     # -- bulk ------------------------------------------------------------------------------
 

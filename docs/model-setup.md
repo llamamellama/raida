@@ -5,8 +5,10 @@ Containers on macOS cannot reach the Apple GPU, so Docker would only give slower
 
 ## The LLM
 
-raida talks to a model server on localhost. The default is Ollama; llama.cpp's `llama-server`
-is the alternative for long-context tuning. Set `llm.backend`, `llm.base_url` and `llm.model`.
+raida talks to a model server on localhost. On Apple Silicon the recommended server is
+llama.cpp's `llama-server` (`llm.backend = "llama_server"`, started with `make llm`); Ollama
+downloads the weights and can also serve them (`llm.backend = "ollama"`). Set `llm.backend`,
+`llm.base_url` and `llm.model`. Why llama-server: see "llama-server" below and ADR-0005.
 
 ### Recommended models for a 96-128 GB MacBook Pro
 
@@ -30,20 +32,32 @@ raida plans with a character heuristic (`llm.chars_per_token`, default 3.7, whic
 Chinese, Japanese and Korean tokenize at close to one token per character, so the estimator
 counts those scripts separately. Measured on this project's M2 Max with `qwen3:30b-a3b` on a
 Traditional Chinese transcript: 31,259 characters were 22,842 tokens (1.37 characters per
-token, 0.83 tokens per CJK character), and the prefill ran at about 245 tokens per second at
-that length, far below the rate for short English prompts. Four two-hour Mandarin recordings
-are therefore about 90k tokens, not the 35k the old rule reported, and take about six minutes to
-read before the first visible token. Plan `llm.synthesis_budget_tokens` from real token counts:
-the "in" figure on each answer is the server's own count.
+token, 0.83 tokens per CJK character; Simplified text of the same speech is about 0.66 tokens
+per character). Four two-hour Mandarin recordings are therefore about 90k to 100k tokens, not
+the 35k the old rule reported. Reading that many takes about 14 minutes on this machine (see
+"How long reading a prompt takes"), which is why answers read notes. Plan budgets from real
+token counts: the "in" figure on each answer is the server's own count.
+
+### How long reading a prompt takes
+
+Attention cost grows with the context already read, so reading time grows faster than prompt
+length. llama.cpp build 11146 on the M2 Max with `qwen3:30b-a3b` read 2k new tokens at about
+1,100 tok/s from an empty context and at about 300 tok/s with 16k already in it, which works
+out to about 30 s for a 16k-token prompt, 100 s for 32k and 14 minutes for 100k. The engine is
+not the lever: Ollama 0.30.10 read at about half that speed, batch size changed less than 8%,
+and an 8-bit KV cache read prompts as fast but generated 25% slower. What helps is reading less
+(notes) and reading once (the prompt cache).
 
 ### Context budget
 
 Advertised context windows (128k-256k) are larger than the range where open models keep full
 comprehension; published long-context benchmarks show degradation starting between 16k and 64k
-tokens. raida therefore defaults `llm.synthesis_budget_tokens` to 64000 and condenses sources
-above that. The server is asked for `num_ctx = budget + output reserve + overhead` (74240 by
-default). Raise the budget only after `make bench` shows acceptable prefill time at that size
-and you have checked answer quality on a real long input.
+tokens. Normal answers stay under `llm.interactive_budget_tokens` (32000). "Read full text"
+answers use `llm.synthesis_budget_tokens` (64000) and condense sources above that. The server
+must hold `budget + output reserve + overhead` tokens (74240 by default): Ollama is asked for
+that `num_ctx`, and `make llm` starts llama-server with 81920 (`RAIDA_LLAMA_CTX`). Raise the
+budgets only after `make bench` shows acceptable prefill time at that size and you have checked
+answer quality on a real long input.
 
 ### Reasoning output
 
@@ -62,6 +76,12 @@ answer spent a 64-token budget entirely on reasoning). Two knobs:
 
 With reasoning on, raise `llm.output_reserve_tokens` (16384 is comfortable) so a long think
 cannot truncate the visible answer; `num_ctx` grows by the same amount.
+
+llama-server handles both without settings in raida: `make llm` caps reasoning at 1024 tokens
+per answer (`RAIDA_LLAMA_THINK_BUDGET`, then the model is told to write the answer), and for
+note taking raida closes the reasoning block of thinking-only templates such as Qwen3 Thinking
+2507, so notes are written directly (measured: 850 tokens of notes for a 4.4k-token excerpt in
+23 s, instead of a long reasoning phase first).
 
 ### Ollama settings
 
@@ -117,16 +137,39 @@ all of these while leaving PyPI and GitHub open; the symptom is a connection res
 TLS handshake (`curl: (35) ... Socket is not connected`). Request an exception for those
 hosts or use the copy route above.
 
-### Using llama-server instead
+### llama-server
 
 ```
-llama-server -m model.gguf -c 74240 -fa on --port 8080
+make llm MODEL=qwen3:30b-a3b          # scripts/llama-server.sh --ollama qwen3:30b-a3b
 ```
 
-Then set `llm.backend = "openai_compatible"` and `llm.base_url = "http://127.0.0.1:8080"`.
-llama-server offers per-slot KV quantization, prompt-cache save/restore and JSON-schema output,
-and is reported to hold up better than MLX above ~30k tokens of context. Measure on your machine
-with `make bench` before deciding.
+The script finds the GGUF file Ollama downloaded for the tag and starts llama-server on it in
+place (`--gguf PATH` takes any GGUF file instead), with `--alias` set to the tag, which must
+equal `llm.model`. It works when Ollama stored the model as a standard GGUF, verified for
+`qwen3:30b-a3b`; a model Ollama keeps in its own layout may not load, and then the publisher's
+GGUF with `--gguf` is the way. Settings, each overridable by environment variable:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `-np 3 --kv-unified` | 3 slots, one shared KV pool | an answer, a background note call and a read-ahead can each keep their prompt |
+| `-c` (`RAIDA_LLAMA_CTX`) | 81920 | covers "Read full text" at the default budgets |
+| KV cache type | f16 | 8-bit halves KV memory but generated 25% slower here (56 vs 73 tok/s at 4k context) |
+| `--cache-ram` (`RAIDA_LLAMA_CACHE_MIB`) | 8192 MiB | keeps the prompts of idle sessions, so each session's sources are read once. A session over four two-hour recordings takes about 2.6 GB, so about three fit besides the three slots; raise it to keep more sessions warm |
+| `--reasoning-budget` (`RAIDA_LLAMA_THINK_BUDGET`) | 1024 | bounds the silent thinking before an answer (about 25 s at 25k context) |
+| `--sleep-idle-seconds` (`RAIDA_LLAMA_IDLE_S`) | 3600 | unloads the model after an hour without requests, reloads on the next |
+| `-b 2048 -ub 2048`, `-fa on` | | 5 to 8% faster prompt reading than the defaults |
+
+Memory with `qwen3:30b-a3b`: 18.6 GB of weights, about 8 GB of KV cache at 81920 tokens, and up
+to 8 GB of cached prompts, about 35 GB at most, returned after an hour idle.
+
+What raida uses beyond the OpenAI-compatible API: `/apply-template` and `/completion` to write
+notes without reasoning, `max_tokens: 0` to read a session's prompt ahead of the question,
+`cached_tokens` in usage, `/tokenize`, and `/props` for the doctor check (served alias, context
+size, slots).
+
+With Ollama instead, everything works, but Ollama runs one request slot, so every note-taking
+call evicts the previous prompt and sessions are not read ahead; the first question in a
+session then reads its sources, about 40 s for four two-hour recordings' notes.
 
 ## Speech-to-text
 

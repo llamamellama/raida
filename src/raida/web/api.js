@@ -31,12 +31,13 @@ export const api = {
   addByPath: (sessionId, paths, language) =>
     request("POST", `/api/sessions/${sessionId}/sources/by-path`, { paths, language }),
   sourceText: (id) => request("GET", `/api/sources/${id}/text`, undefined, { text: true }),
+  sourceNotes: (id) => request("GET", `/api/sources/${id}/notes`, undefined, { text: true }),
   setLanguage: (id, language) => request("PATCH", `/api/sources/${id}`, { language }),
   retrySource: (id) => request("POST", `/api/sources/${id}/retry`),
   cancelSource: (id) => request("POST", `/api/sources/${id}/cancel`),
   deleteSource: (id) => request("DELETE", `/api/sources/${id}`),
-  sendMessage: (sessionId, content, runWithReadyOnly) =>
-    request("POST", `/api/sessions/${sessionId}/messages`, { content, run_with_ready_only: runWithReadyOnly }),
+  sendMessage: (sessionId, content, runWithReadyOnly, fullText) =>
+    request("POST", `/api/sessions/${sessionId}/messages`, { content, run_with_ready_only: runWithReadyOnly, full_text: fullText }),
   cancelMessage: (id) => request("POST", `/api/messages/${id}/cancel`),
   exportMessage: (id, format) => request("POST", `/api/messages/${id}/exports`, { format }),
 };

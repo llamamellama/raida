@@ -13,7 +13,7 @@ export function initChat(store, els) {
     if (!content || !sessionId()) return;
     els.send.disabled = true;
     try {
-      await api.sendMessage(sessionId(), content, els.readyOnly.checked);
+      await api.sendMessage(sessionId(), content, els.readyOnly.checked, els.fullText.checked);
       els.instruction.value = "";
     } catch (err) { toast(err.message, true); } finally { els.send.disabled = false; }
   });
@@ -55,8 +55,12 @@ export function initChat(store, els) {
     if (m.status === "waiting_for_sources") head.push('<span class="pill">waiting for sources to finish</span>');
     if (m.status === "pending") head.push('<span class="pill">queued</span>');
     if (m.status === "streaming") head.push('<span class="pill">writing</span>');
-    if (m.strategy) head.push(`<span class="pill">${m.strategy === "map_reduce" ? "condensed then synthesized" : "single pass"}</span>`);
-    if (m.token_usage?.prompt_tokens) head.push(`<span class="pill">${m.token_usage.prompt_tokens.toLocaleString()} in / ${(m.token_usage.completion_tokens || 0).toLocaleString()} out</span>`);
+    if (m.strategy) head.push(`<span class="pill" title="${escapeAttr(STRATEGY_HINTS[m.strategy] || "")}">${STRATEGY_LABELS[m.strategy] || m.strategy}</span>`);
+    const u = m.token_usage || {};
+    if (u.prompt_tokens) {
+      const cached = u.cached_tokens ? ` (${u.cached_tokens.toLocaleString()} already read)` : "";
+      head.push(`<span class="pill">${u.prompt_tokens.toLocaleString()} in${cached} / ${(u.completion_tokens || 0).toLocaleString()} out</span>`);
+    }
     if (m.status === "cancelled") head.push('<span class="pill">cancelled</span>');
     const progress = state.progress.get(m.id);
     const artifacts = [...state.artifacts.values()].filter((a) => a.message_id === m.id);
@@ -88,6 +92,13 @@ export function initChat(store, els) {
 
   store.subscribe(scheduleRender);
 }
+
+const STRATEGY_LABELS = { single_shot: "full text", notes: "from notes", map_reduce: "condensed then synthesized" };
+const STRATEGY_HINTS = {
+  single_shot: "Every source was read in full.",
+  notes: "Long sources were read through the notes taken when they were added, plus passages found for this question.",
+  map_reduce: "Sources were condensed for this instruction, then synthesized.",
+};
 
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function escapeAttr(s) { return escapeHtml(s); }

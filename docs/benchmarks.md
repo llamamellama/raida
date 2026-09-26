@@ -37,3 +37,42 @@ ask several questions in one session rather than one question per session. Readi
 takes over 15 minutes and the first answer over four two-hour recordings costs 20 to 25 minutes;
 one recording per session answers in about 5 minutes. Apple SpeechAnalyzer via yap transcribed
 2h20m of Mandarin in about 60 s (about 140x real time).
+
+## 2026-09-25, M2 Max 96 GB, llama.cpp build 11146 (Homebrew `llama.cpp` 0.5.0), same model
+
+`qwen3:30b-a3b` GGUF read in place from Ollama's store, Metal, flash attention on.
+
+`llama-bench`, prompt reading (pp) and writing (tg) at a given context already read (d):
+
+| Test | ubatch 512 | ubatch 2048 |
+| --- | --- | --- |
+| pp2048 at d0 | 1,023 tok/s | 1,107 tok/s |
+| pp2048 at d16384 | 294 tok/s | 310 tok/s (q8_0 KV: 312) |
+| tg32 at d0 | 92 tok/s | 93 tok/s |
+| tg32 at d16384 | 50 tok/s | 53 tok/s |
+| tg64 at d4096, f16 / q8_0 KV | | 73 / 56 tok/s |
+
+Reading N tokens takes about 0.76 ms x N + 0.075 us x N^2: 30 s for 16k, 100 s for 32k, 14
+minutes for 100k. Ollama 0.30.10 (llama.cpp build 9672, ubatch 512, q8_0 KV) read about half as
+fast (213 tok/s over a 23k-token prompt).
+
+raida with `scripts/llama-server.sh` (3 slots, unified f16 KV, 8 GB prompt cache), four Mandarin
+recordings (2h04m to 2h22m, 9h20m in total), Apple speech (zh-TW) plus OpenCC:
+
+| Step | Measured |
+| --- | --- |
+| Transcription, per recording | 46 to 51 s |
+| Notes, per 4k-token section (reasoning off) | 12 to 18 s: prompt at about 840 tok/s, notes at about 71 tok/s |
+| Notes, per recording (6 to 8 sections plus overview) | about 2.6 minutes; notes are 21 to 27% of the transcript (4.6k to 7.7k tokens) |
+| All four recordings, re-run to fully ready | about 9 minutes, in the background |
+| Attaching the four from the library to a new session | 0.2 s |
+| Reading the new session ahead (25,140 tokens) | 58 s at 436 tok/s, in the background |
+| Question 1 (Traditional Chinese, synthesis), session read ahead | 1,779 new tokens read (24,770 cached); text after 29.7 s, of which about 24 s reasoning (952 tokens, 2048 budget); done at 54 s |
+| Question 2 (a specific story), follow-up | text after 26.7 s (649 reasoning tokens); the passage search found the verbatim story |
+| Question 1 with `llm.think = false`, prefix cached | text after 0.1 s, done at 34 s; more of a list of quotes, less synthesis |
+| Worst case: three recordings in a new combination, asked at once | 18,645 tokens read cold; text after 62 s, done at 84 s |
+| Writing speed at 25k context | about 40 tok/s |
+
+A 16k-token prompt restored from the server's RAM prompt cache after four other prompts had
+used its slot (0.1 s). At 25k tokens a session's cached prompt takes about 2.6 GB, so the
+default 8 GB holds about three sessions beyond the three slots.

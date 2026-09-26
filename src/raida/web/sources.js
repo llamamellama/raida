@@ -4,9 +4,9 @@ import { LANGUAGES, formatBytes, formatDuration, toast } from "./util.js";
 const STAGE_LABELS = {
   queued: "Queued", extracting: "Extracting text", transcoding: "Decoding audio",
   detecting_language: "Detecting language", transcribing: "Transcribing", rendering: "Rendering pages",
-  ocr: "Recognizing text (OCR)", ready: "Ready", failed: "Failed", cancelled: "Cancelled",
+  ocr: "Recognizing text (OCR)", noting: "Taking notes", ready: "Ready", failed: "Failed", cancelled: "Cancelled",
 };
-const ACTIVE = new Set(["queued", "extracting", "transcoding", "detecting_language", "transcribing", "rendering", "ocr"]);
+const ACTIVE = new Set(["queued", "extracting", "transcoding", "detecting_language", "transcribing", "rendering", "ocr", "noting"]);
 
 export function initSources(store, els) {
   const langSelect = els.defaultLanguage;
@@ -68,7 +68,7 @@ export function initSources(store, els) {
       els.libraryList.innerHTML = entries.map((e) => {
         const here = inSession.has(e.sha256);
         const lang = LANGUAGES.find(([c]) => c === e.language)?.[1] || e.language;
-        const meta = [e.kind, formatBytes(e.size_bytes), lang, e.token_estimate ? `~${e.token_estimate.toLocaleString()} tok` : null,
+        const meta = [e.kind, formatBytes(e.size_bytes), lang, e.token_estimate ? `~${e.token_estimate.toLocaleString()} tok` : null, e.notes_ready ? "notes" : null,
           `${e.session_ids.length} session${e.session_ids.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
         return `<label class="library-item ${here ? "in-session" : ""}">
           <input type="checkbox" name="sha" value="${e.sha256}" ${here ? "checked disabled" : ""}>
@@ -123,6 +123,8 @@ export function initSources(store, els) {
     if (s.meta?.ocr) meta.push("OCR");
     if (s.meta?.cache_hit) meta.push("cached");
     if (s.token_estimate) meta.push(`~${s.token_estimate.toLocaleString()} tok`);
+    const notes = s.meta?.notes;
+    if (notes?.status === "done") meta.push(`notes ~${(notes.tokens || 0).toLocaleString()} tok`);
     const pct = Math.round((s.progress || 0) * 100);
     li.innerHTML = `
       <div class="source-head">
@@ -133,9 +135,11 @@ export function initSources(store, els) {
       <div class="source-status ${s.status}">${STAGE_LABELS[s.status] || s.status}${active && pct ? ` · ${pct}%` : ""}</div>
       ${active ? `<div class="progress ${pct ? "" : "indeterminate"}"><div style="width:${pct}%"></div></div>` : ""}
       ${s.error ? `<div class="source-error">${escapeHtml(s.error)}</div>` : ""}
+      ${notes?.status === "failed" && !active ? `<div class="source-warning">No notes (${escapeHtml(notes.error || "failed")}). Answers read this source in full, which is slower; Re-run to try again.</div>` : ""}
       <div class="source-actions">
         <select data-action="language" title="Language">${LANGUAGES.map(([c, l]) => `<option value="${c}" ${c === s.language ? "selected" : ""}>${l}</option>`).join("")}</select>
         ${s.status === "ready" ? `<button class="btn btn-sm btn-quiet" data-action="view">View text</button>` : ""}
+        ${s.status === "ready" && notes?.status === "done" ? `<button class="btn btn-sm btn-quiet" data-action="notes">View notes</button>` : ""}
         ${active ? `<button class="btn btn-sm btn-quiet" data-action="cancel">Cancel</button>` : `<button class="btn btn-sm btn-quiet" data-action="retry">Re-run</button>`}
         <button class="btn btn-sm btn-quiet btn-danger" data-action="remove">Remove</button>
       </div>`;
@@ -147,6 +151,13 @@ export function initSources(store, els) {
             const text = await api.sourceText(s.id);
             els.textDialogTitle.textContent = s.original_name;
             els.textDialogBody.textContent = text;
+            els.textDialogBody.hidden = false; els.textDialogMd.hidden = true;
+            els.textDialog.showModal();
+          } else if (action === "notes") {
+            const md = await api.sourceNotes(s.id);
+            els.textDialogTitle.textContent = `Notes: ${s.original_name}`;
+            els.textDialogMd.innerHTML = DOMPurify.sanitize(marked.parse(md, { gfm: true }));
+            els.textDialogBody.hidden = true; els.textDialogMd.hidden = false;
             els.textDialog.showModal();
           } else if (action === "cancel") await api.cancelSource(s.id);
           else if (action === "retry") await api.retrySource(s.id);

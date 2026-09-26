@@ -2,7 +2,7 @@
 
 cpu: a process pool for parsing/OCR (real parallelism, GIL-free).
 gpu: transcription; one job at a time by default because Metal kernels serialize anyway.
-llm: calls to the model server.
+llm: calls to the model server; answers first, background work (notes, prefill) when idle.
 subprocess: ffmpeg and friends.
 """
 
@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 
 from raida.config import Config
 from raida.doctor import performance_core_count
+from raida.llm.gate import LlmGate
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -28,7 +29,7 @@ class ResourcePool:
         cpu = config.workers.cpu
         self.cpu_workers = min(6, performance_core_count()) if cpu == "auto" else int(cpu)
         self.gpu = asyncio.Semaphore(config.workers.gpu)
-        self.llm = asyncio.Semaphore(config.workers.llm)
+        self.llm = LlmGate(config.workers.llm, config.workers.llm_background)
         self.subprocess = asyncio.Semaphore(config.workers.subprocess)
         self._pool: ProcessPoolExecutor | None = None
 

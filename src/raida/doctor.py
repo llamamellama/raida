@@ -111,8 +111,9 @@ async def check_llm(config: Config) -> ComponentStatus:
     except httpx.HTTPError as exc:
         return ComponentStatus(
             ok=False,
-            detail=f"LLM server unreachable at {config.llm.base_url}: {exc}. "
-            f"Start it (for Ollama: `ollama serve`) and pull `{config.llm.model}`.",
+            detail=f"LLM server unreachable at {config.llm.base_url}: {exc}. Start it "
+            f"(llama-server: `make llm MODEL=<ollama tag>`; Ollama: `ollama serve`) with "
+            f"model `{config.llm.model}`.",
         )
     finally:
         await backend.aclose()

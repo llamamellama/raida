@@ -12,8 +12,9 @@ from raida.llm.tokens import estimate_tokens
 from raida.models import ProcessedCacheEntry, ProcessedSource, utc_now
 
 # Bump when a fix changes processed output for the same input; v2: the media stage
-# passes regional language codes (zh-TW) to the transcriber instead of the base language.
-PIPELINE_VERSION = "v2"
+# passes regional language codes (zh-TW) to the transcriber instead of the base language;
+# v3: Chinese transcripts are normalized to the chosen script with OpenCC.
+PIPELINE_VERSION = "v3"
 
 
 def cache_key(sha256: str, kind: str, language: str, variant: str) -> str:

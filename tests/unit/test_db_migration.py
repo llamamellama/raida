@@ -53,3 +53,27 @@ def test_version_1_database_gains_title_auto(tmp_path: Path) -> None:
         assert session.title_auto is True
     finally:
         upgraded.close()
+
+
+def test_version_2_database_gains_full_text_and_notes(tmp_path: Path) -> None:
+    path = tmp_path / "v2.sqlite3"
+    db = Database(path)
+    db.close()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE messages DROP COLUMN full_text")
+    conn.execute("DROP TABLE notes")
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    try:
+        assert "full_text" in _columns(path, "messages")
+        assert {"cache_key", "overview", "sections"} <= _columns(path, "notes")
+        assert db.get_notes("missing") is None
+    finally:
+        db.close()
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        conn.close()

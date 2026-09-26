@@ -6,6 +6,10 @@ from raida.llm.base import LlmBackend
 
 def build_llm_backend(config: Config) -> LlmBackend:
     backend = config.llm.backend
+    if backend == "llama_server":
+        from raida.llm.llama_server import LlamaServerBackend
+
+        return LlamaServerBackend(config.llm)
     if backend == "ollama":
         from raida.llm.ollama import OllamaBackend
 

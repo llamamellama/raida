@@ -1,4 +1,8 @@
-"""OpenAI-compatible backend for llama-server, LM Studio, mlx_lm.server and similar."""
+"""OpenAI-compatible backend for LM Studio, mlx_lm.server, vLLM and similar servers.
+
+llama.cpp's llama-server has its own subclass in ``llama_server.py`` that adds prompt-cache
+prefill, exact token counts and answers without a reasoning phase.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ from typing import Any
 import httpx
 
 from raida.config import LlmConfig
-from raida.llm.base import ChatMessage, GenerationOptions, LlmError, Usage
+from raida.llm.base import ChatMessage, GenerationOptions, LlmError, ReasoningCallback, Usage
 from raida.llm.tokens import estimate_tokens
 from raida.models import ComponentStatus
 
@@ -19,6 +23,7 @@ log = logging.getLogger(__name__)
 
 class OpenAiCompatibleBackend:
     name = "openai_compatible"
+    prompt_cache = False
 
     def __init__(self, config: LlmConfig) -> None:
         self.config = config
@@ -46,10 +51,26 @@ class OpenAiCompatibleBackend:
             "temperature": options.temperature,
         }
 
-    async def stream_chat(
-        self, messages: list[ChatMessage], options: GenerationOptions, usage: Usage | None = None
+    @staticmethod
+    def _record_usage(usage: Usage, data: dict[str, Any]) -> None:
+        usage.prompt_tokens = int(data.get("prompt_tokens", 0) or 0)
+        usage.completion_tokens = int(data.get("completion_tokens", 0) or 0)
+        details = data.get("prompt_tokens_details") or {}
+        usage.cached_tokens = int(details.get("cached_tokens", 0) or 0)
+
+    def _timeout_error(self, exc: Exception) -> LlmError:
+        return LlmError(
+            f"The LLM server did not answer within llm.request_timeout_s = "
+            f"{self.config.request_timeout_s:g} s. It is silent while it reads the prompt, and "
+            "a very long prompt can take many minutes; raise the timeout or reduce the sources."
+        )
+
+    async def _stream(
+        self,
+        payload: dict[str, Any],
+        usage: Usage | None,
+        on_reasoning: ReasoningCallback | None,
     ) -> AsyncIterator[str]:
-        payload = self._payload(messages, options, stream=True)
         payload["stream_options"] = {"include_usage": True}
         try:
             async with self._client.stream("POST", "/v1/chat/completions", json=payload) as resp:
@@ -63,17 +84,36 @@ class OpenAiCompatibleBackend:
                     if data == "[DONE]":
                         break
                     chunk = json.loads(data)
+                    if chunk.get("error"):
+                        raise LlmError(f"LLM server error: {chunk['error']}")
                     if usage is not None and chunk.get("usage"):
-                        usage.prompt_tokens = int(chunk["usage"].get("prompt_tokens", 0) or 0)
-                        usage.completion_tokens = int(
-                            chunk["usage"].get("completion_tokens", 0) or 0
-                        )
+                        self._record_usage(usage, chunk["usage"])
+                        if chunk.get("timings"):
+                            usage.extra["timings"] = chunk["timings"]
                     for choice in chunk.get("choices", []):
-                        delta = choice.get("delta", {}).get("content")
-                        if delta:
-                            yield delta
+                        delta = choice.get("delta", {})
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            if usage is not None:
+                                usage.reasoning_tokens += 1
+                            if on_reasoning is not None:
+                                on_reasoning(reasoning)
+                        content = delta.get("content")
+                        if content:
+                            yield content
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error(exc) from exc
         except httpx.HTTPError as exc:
-            raise LlmError(f"LLM request failed: {exc}") from exc
+            raise LlmError(f"LLM request failed: {type(exc).__name__}: {exc}") from exc
+
+    def stream_chat(
+        self,
+        messages: list[ChatMessage],
+        options: GenerationOptions,
+        usage: Usage | None = None,
+        on_reasoning: ReasoningCallback | None = None,
+    ) -> AsyncIterator[str]:
+        return self._stream(self._payload(messages, options, stream=True), usage, on_reasoning)
 
     async def complete(self, messages: list[ChatMessage], options: GenerationOptions) -> str:
         return "".join([d async for d in self.stream_chat(messages, options)])
@@ -88,6 +128,8 @@ class OpenAiCompatibleBackend:
         }
         try:
             resp = await self._client.post("/v1/chat/completions", json=payload)
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error(exc) from exc
         except httpx.HTTPError as exc:
             raise LlmError(f"LLM request failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -97,6 +139,13 @@ class OpenAiCompatibleBackend:
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise LlmError(f"Model returned invalid JSON: {content[:200]}") from exc
+
+    async def prefill(self, messages: list[ChatMessage], options: GenerationOptions) -> Usage:
+        usage = Usage()
+        short = GenerationOptions(num_ctx=options.num_ctx, max_tokens=1, temperature=0.0)
+        async for _ in self.stream_chat(messages, short, usage):
+            pass
+        return usage
 
     async def count_tokens(self, text: str) -> int:
         if self._tokenize_supported is not False:

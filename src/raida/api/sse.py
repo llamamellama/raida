@@ -27,6 +27,9 @@ def session_event_stream(state: AppState, session_id: str) -> EventSourceRespons
                     "event": "system.status",
                     "data": state.scheduler.last_health.model_dump_json(),
                 }
+            # The user opened this session: read its sources into the prompt cache now, so
+            # the first question does not wait for them.
+            state.scheduler.schedule_prepare(session_id)
             while True:
                 event: Event = await queue.get()
                 yield event.to_sse()

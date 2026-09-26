@@ -1,4 +1,4 @@
-.PHONY: setup dev doctor ollama test lint fmt bench fixtures
+.PHONY: setup dev doctor llm ollama test lint fmt bench fixtures
 
 # Homebrew on Apple Silicon installs to /opt/homebrew, which many shells do not have on PATH
 # (an Intel Homebrew under /usr/local often comes first). Put it in front for every recipe so
@@ -16,6 +16,11 @@ dev:
 
 doctor:
 	$(MAC_LIBS) uv run raida doctor
+
+# Foreground llama-server with the settings raida expects; run it in a second terminal.
+# MODEL is an Ollama tag whose weights are reused (no copy), e.g. make llm MODEL=qwen3:30b-a3b.
+llm:
+	./scripts/llama-server.sh --ollama $(MODEL)
 
 # Foreground Ollama with the settings raida expects; run it in a second terminal.
 ollama:

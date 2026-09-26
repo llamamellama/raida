@@ -13,16 +13,19 @@ from raida.config import Config
 from raida.db import Database
 from raida.db.repo import NotFoundError
 from raida.doctor import find_ffmpeg
+from raida.llm.notes import NoteTaker
 from raida.llm.registry import build_llm_backend
 from raida.llm.synthesis import Synthesizer
 from raida.llm.tokens import estimate_tokens
 from raida.models import (
+    ACTIVE_SOURCE_STATUSES,
     TERMINAL_SOURCE_STATUSES,
     HealthReport,
     Message,
     ProcessedSource,
     SessionDetail,
     Source,
+    SourceNotes,
     new_id,
     utc_now,
 )
@@ -31,6 +34,7 @@ from raida.pipeline.events import Event, EventBus
 from raida.pipeline.ingest import remove_stored_file_if_unreferenced
 from raida.pipeline.resources import ResourcePool
 from raida.pipeline.stages import docx, media, ocr, pdf, subtitles, text
+from raida.script import normalize_script
 from raida.transcribe.base import Transcript
 from raida.transcribe.format import transcript_markdown
 from raida.transcribe.languages import base_language
@@ -48,9 +52,12 @@ class Scheduler:
         self.transcribers = TranscriberRegistry(config)
         self.llm = build_llm_backend(config)
         self.synthesizer = Synthesizer(config, db, self.llm, self.resources.llm)
+        self.notes = NoteTaker(config, db, self.llm, self.resources.llm)
         self._source_tasks: dict[str, asyncio.Task[None]] = {}
+        self._prepare_tasks: dict[str, asyncio.Task[None]] = {}
         self._message_tasks: dict[str, asyncio.Task[None]] = {}
         self._background: set[asyncio.Task[Any]] = set()
+        self._stopping = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self.last_health: HealthReport | None = None
 
@@ -64,9 +71,16 @@ class Scheduler:
             await self._set_source(source.id, status="queued", progress=0.0, error=None)
             self.submit_source(source.id)
         self._spawn(self._warm_up_llm())
+        self._spawn(self._backfill_notes())
 
     async def stop(self) -> None:
-        tasks = [*self._source_tasks.values(), *self._message_tasks.values(), *self._background]
+        self._stopping = True  # cancelled pipelines must not schedule new background work
+        tasks = [
+            *self._source_tasks.values(),
+            *self._message_tasks.values(),
+            *self._prepare_tasks.values(),
+            *self._background,
+        ]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -199,15 +213,16 @@ class Scheduler:
             md_path = await asyncio.to_thread(
                 cache.store_processed, self.config, self.db, key, source.sha256, doc
             )
-            await self._set_source(
-                source.id,
-                status="ready",
-                progress=1.0,
-                error=None,
-                processed_path=str(md_path),
-                token_estimate=doc.token_estimate,
-                meta=doc.meta,
-            )
+            fields: dict[str, Any] = {
+                "error": None,
+                "processed_path": str(md_path),
+                "token_estimate": doc.token_estimate,
+                "meta": doc.meta,
+            }
+            if self.notes.needed(doc):
+                source = await self._set_source(source.id, status="noting", progress=0.0, **fields)
+                fields["meta"] = await self._take_notes(source, key, doc)
+            await self._set_source(source.id, status="ready", progress=1.0, **fields)
             log.info(
                 "source_ready",
                 extra={"source_id": source.id, "tokens": doc.token_estimate, "started": started},
@@ -222,6 +237,185 @@ class Scheduler:
             )
         finally:
             await self._maybe_start_waiting_messages(source.session_id)
+            await self._source_settled(source.session_id)
+
+    async def _take_notes(
+        self, source: Source, processed_key: str, doc: ProcessedSource
+    ) -> dict[str, Any]:
+        """Take (or load) the notes for a processed document; returns the source meta with a
+        ``notes`` entry. A failure leaves the source usable through its full text."""
+        await asyncio.to_thread(
+            self.db.create_job, stage="noting", resource_class="llm", source_id=source.id
+        )
+        report = self._progress_reporter(source, "noting", 0.0, 0.99)
+        language = source.language if base_language(source.language) else None
+        try:
+            notes = await self.notes.ensure(
+                processed_key, doc, language, lambda done, total: report(done / max(1, total))
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("notes_failed", extra={"source_id": source.id, "error": str(exc)[:300]})
+            return {**doc.meta, "notes": {"status": "failed", "error": str(exc)[:500]}}
+        return {**doc.meta, "notes": _notes_meta(notes)}
+
+    async def _backfill_notes(self) -> None:
+        """Take notes for ready sources processed before notes existed, or whose notes failed
+        (for example while the model server was down). One source at a time, as background
+        work; each run is registered like a source pipeline so Cancel and Remove reach it."""
+        try:
+            sources = await asyncio.to_thread(self.db.ready_sources)
+        except Exception:
+            log.exception("notes_backfill_failed")
+            return
+        for source in sources:
+            if source.id in self._source_tasks:
+                continue
+            task = asyncio.create_task(self._backfill_one(source), name=f"notes:{source.id}")
+            self._source_tasks[source.id] = task
+            task.add_done_callback(lambda t, sid=source.id: self._source_tasks.pop(sid, None))
+            try:
+                await task
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise  # shutting down; the user cancelling one source only stops that one
+
+    async def _backfill_one(self, source: Source) -> None:
+        path = source.processed_path
+        if not path:
+            return
+        key = Path(path).stem
+        try:
+            existing = await self.notes.load(key)
+            if existing is not None:
+                if (source.meta.get("notes") or {}).get("status") != "done":
+                    # Taken for the same file in another session.
+                    await self._set_source(
+                        source.id, meta={**source.meta, "notes": _notes_meta(existing)}
+                    )
+                return
+            if not await asyncio.to_thread(Path(path).exists):
+                return
+            doc = await asyncio.to_thread(
+                cache.load_processed,
+                path,
+                source.id,
+                source.original_name,
+                self.config.llm.chars_per_token,
+            )
+            if not self.notes.needed(doc):
+                return
+            current = await asyncio.to_thread(self.db.get_source, source.id)
+            if current.status != "ready":
+                return
+            current = await self._set_source(source.id, status="noting", progress=0.0)
+            meta = await self._take_notes(current, key, doc)
+            await self._set_source(source.id, status="ready", progress=1.0, meta=meta)
+        except NotFoundError:
+            return
+        except asyncio.CancelledError:
+            # The text is still ready; only the notes were interrupted.
+            with contextlib.suppress(Exception):
+                await self._set_source(source.id, status="ready", progress=1.0)
+            raise
+        except Exception:
+            log.exception("notes_backfill_failed", extra={"source_id": source.id})
+            return
+        await self._maybe_start_waiting_messages(source.session_id)
+        await self._source_settled(source.session_id)
+
+    async def _source_settled(self, session_id: str) -> None:
+        """Prepare the session once none of its sources is still processing."""
+        try:
+            sources = await asyncio.to_thread(self.db.list_sources, session_id)
+        except NotFoundError:
+            return
+        if not any(s.status in ACTIVE_SOURCE_STATUSES for s in sources):
+            self.schedule_prepare(session_id)
+
+    # -- prompt cache ----------------------------------------------------------------------
+
+    def schedule_prepare(self, session_id: str) -> None:
+        """Read the session's sources into the model server's prompt cache in the background,
+        so the next question starts answering after reading only itself. Called when a session
+        is opened, when its sources settle and after each answer."""
+        if not self.llm.prompt_cache or self._stopping:
+            return
+        running = self._prepare_tasks.get(session_id)
+        if running is not None and not running.done():
+            running.cancel()  # its sources or history changed; prepare the new prefix
+        task = asyncio.create_task(self._prepare(session_id), name=f"prepare:{session_id}")
+        self._prepare_tasks[session_id] = task
+        task.add_done_callback(
+            lambda t: (
+                self._prepare_tasks.pop(session_id, None)
+                if self._prepare_tasks.get(session_id) is t
+                else None
+            )
+        )
+
+    async def _prepare(self, session_id: str) -> None:
+        try:
+            sources = await asyncio.to_thread(self.db.list_sources, session_id)
+            if any(s.status in ACTIVE_SOURCE_STATUSES for s in sources):
+                return
+            messages = await asyncio.to_thread(self.db.list_messages, session_id)
+            if any(m.status in ("pending", "streaming") for m in messages):
+                return
+            docs, notes = await self._load_docs(sources)
+            if not docs:
+                return
+            plan = self.synthesizer.plan_fast(docs, notes, messages)
+            if plan is None or "overview" in plan.forms.values():
+                # Without notes for every long source, or with some sources cut to overviews to
+                # fit llm.interactive_budget_tokens, the prompt depends on the question.
+                log.info(
+                    "session_prepare_skipped",
+                    extra={
+                        "session_id": session_id,
+                        "reason": "long source without notes" if plan is None else "overviews",
+                    },
+                )
+                return
+            started = asyncio.get_running_loop().time()
+            usage = await self.synthesizer.prefill(plan)
+            if usage is not None:
+                log.info(
+                    "session_prepared",
+                    extra={
+                        "session_id": session_id,
+                        "prompt_tokens": usage.prompt_tokens,
+                        "cached_tokens": usage.cached_tokens,
+                        "seconds": round(asyncio.get_running_loop().time() - started, 1),
+                    },
+                )
+        except asyncio.CancelledError:
+            raise
+        except NotFoundError:
+            return
+        except Exception as exc:
+            log.warning(
+                "session_prepare_failed", extra={"session_id": session_id, "error": str(exc)[:300]}
+            )
+
+    async def _load_docs(
+        self, sources: list[Source]
+    ) -> tuple[list[ProcessedSource], dict[str, SourceNotes]]:
+        ready = [s for s in sources if s.status == "ready" and s.processed_path]
+        cpt = self.config.llm.chars_per_token
+        docs: list[ProcessedSource] = []
+        notes: dict[str, SourceNotes] = {}
+        for s in ready:
+            path = s.processed_path or ""
+            docs.append(
+                await asyncio.to_thread(cache.load_processed, path, s.id, s.original_name, cpt)
+            )
+            note = await self.notes.load(Path(path).stem)
+            if note is not None:
+                notes[s.id] = note
+        return docs, notes
 
     async def _stage(self, source: Source, stage: str, resource: str, progress: float) -> None:
         await self._set_source(source.id, status=stage, progress=progress)
@@ -367,9 +561,13 @@ class Scheduler:
             transcript: Transcript = await self.resources.run_blocking(
                 transcriber.transcribe, wav, language=language, progress=report
             )
-        markdown = transcript_markdown(
-            transcript.segments, self.config.transcribe.paragraph_seconds
-        )
+        segments = transcript.segments
+        if language is not None:
+            segments = [
+                seg.model_copy(update={"text": normalize_script(seg.text, language)})
+                for seg in segments
+            ]
+        markdown = transcript_markdown(segments, self.config.transcribe.paragraph_seconds)
         meta = {
             "duration_s": round(duration, 1),
             "segments": len(transcript.segments),
@@ -382,7 +580,7 @@ class Scheduler:
     # -- messages --------------------------------------------------------------------------
 
     async def submit_message(
-        self, session_id: str, content: str, run_with_ready_only: bool
+        self, session_id: str, content: str, run_with_ready_only: bool, full_text: bool = False
     ) -> Message:
         content = content.strip()
         if not content:
@@ -404,6 +602,7 @@ class Scheduler:
             role="assistant",
             status="pending",
             run_with_ready_only=run_with_ready_only,
+            full_text=full_text,
             created_at=now,
             updated_at=now,
         )
@@ -472,12 +671,8 @@ class Scheduler:
                 if m.created_at < message.created_at and m.content != instruction
             ]
             sources = await asyncio.to_thread(self.db.list_sources, session_id)
-            ready = [s for s in sources if s.status == "ready" and s.processed_path]
-            cpt = self.config.llm.chars_per_token
-            docs = [
-                cache.load_processed(s.processed_path, s.id, s.original_name, cpt)  # type: ignore[arg-type]
-                for s in ready
-            ]
+            docs, notes = await self._load_docs(sources)
+            languages = [s.language for s in sources if s.status == "ready" and s.processed_path]
             await self._set_message(message_id, status="streaming", content="")
 
             async def emit(delta: str) -> None:
@@ -500,13 +695,24 @@ class Scheduler:
                 )
 
             result = await self.synthesizer.run(
-                instruction=instruction, sources=docs, history=history, emit=emit, progress=progress
+                instruction=instruction,
+                sources=docs,
+                notes=notes,
+                history=history,
+                emit=emit,
+                progress=progress,
+                full_text=message.full_text,
+                source_languages=languages,
             )
             final = await asyncio.to_thread(self.db.get_message, message_id)
             await self._set_message(
                 message_id, status="done", strategy=result.strategy, token_usage=result.usage
             )
-            await self._maybe_name_session(session_id, history_all, instruction, final.content)
+            self._spawn(
+                self._after_answer(
+                    session_id, history_all, instruction, final.content, result.script
+                )
+            )
         except asyncio.CancelledError:
             await self._set_message(message_id, status="cancelled")
             raise
@@ -516,8 +722,25 @@ class Scheduler:
                 message_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:1000]
             )
 
+    async def _after_answer(
+        self,
+        session_id: str,
+        history: list[Message],
+        instruction: str,
+        answer: str,
+        script_target: str | None,
+    ) -> None:
+        await self._maybe_name_session(session_id, history, instruction, answer, script_target)
+        # The next question's prefix now includes this turn; read it while the user reads.
+        self.schedule_prepare(session_id)
+
     async def _maybe_name_session(
-        self, session_id: str, history: list[Message], instruction: str, answer: str
+        self,
+        session_id: str,
+        history: list[Message],
+        instruction: str,
+        answer: str,
+        script_target: str | None = None,
     ) -> None:
         """Name the session after its first completed answer, unless the user named it."""
         first_answer = not any(m.role == "assistant" and m.status == "done" for m in history)
@@ -529,11 +752,20 @@ class Scheduler:
             return
         if not session.title_auto:
             return
-        title = await self.synthesizer.suggest_title(instruction, answer)
+        title = await self.synthesizer.suggest_title(instruction, answer, script_target)
         if not title:
             return
         session = await asyncio.to_thread(self.db.update_session, session_id, title=title)
         self.events.publish(Event("session.updated", session.model_dump(), session_id=session_id))
+
+
+def _notes_meta(notes: SourceNotes) -> dict[str, Any]:
+    return {
+        "status": "done",
+        "sections": len(notes.sections),
+        "tokens": notes.token_estimate,
+        "model": notes.model,
+    }
 
 
 def _ocr_locale(base: str) -> str:
