@@ -157,9 +157,11 @@ Layout: `src/raida/api` (routes, SSE), `src/raida/pipeline` (scheduler, stages),
   while `uv sync` works: a network filter is blocking the model hosts listed under
   Prerequisites. Meanwhile set `transcribe.backend = "apple"` (macOS 26+, `brew install yap`)
   and `llm.model` to a model `ollama list` already shows.
-- `which brew` prints `/usr/local/bin/brew` on an Apple Silicon Mac: that is the Intel Homebrew,
-  and packages from it are x86_64. `scripts/setup-mac.sh` uses `/opt/homebrew/bin/brew`
-  explicitly; do the same when installing by hand. If the first `ffmpeg` on PATH is the Intel
+- `make dev` says `uv: command not found`, or `which brew` prints `/usr/local/bin/brew` on an
+  Apple Silicon Mac: `/opt/homebrew/bin` is not on your shell's PATH, or the Intel Homebrew
+  (x86_64 packages) comes first. The Makefile and `scripts/setup-mac.sh` put `/opt/homebrew/bin`
+  first themselves; when calling `uv` or `brew` by hand, use `/opt/homebrew/bin/uv` and
+  `/opt/homebrew/bin/brew`, or add `export PATH="/opt/homebrew/bin:$PATH"` to `~/.zshrc`. If the first `ffmpeg` on PATH is the Intel
   one, set `transcribe.ffmpeg_path = "/opt/homebrew/bin/ffmpeg"`.
 
 ## Licenses

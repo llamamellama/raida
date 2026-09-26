@@ -1,5 +1,10 @@
 .PHONY: setup dev doctor ollama test lint fmt bench fixtures
 
+# Homebrew on Apple Silicon installs to /opt/homebrew, which many shells do not have on PATH
+# (an Intel Homebrew under /usr/local often comes first). Put it in front for every recipe so
+# `make dev` works from any terminal; on other platforms the extra entry is harmless.
+export PATH := /opt/homebrew/bin:$(PATH)
+
 # WeasyPrint loads Homebrew's Pango at runtime on macOS; the variable is ignored elsewhere.
 MAC_LIBS := DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib:$(DYLD_FALLBACK_LIBRARY_PATH)
 
