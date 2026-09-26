@@ -1,4 +1,4 @@
-"""Command-line entry point: ``raida serve | doctor | process | ask | export``."""
+"""Command-line entry point: ``raida serve | doctor | process | ask | export | skills``."""
 
 from __future__ import annotations
 
@@ -87,6 +87,33 @@ def cmd_export(args: argparse.Namespace) -> int:
     return asyncio.run(export_message(config, args.message_id, args.format, args.output))
 
 
+def cmd_skills(args: argparse.Namespace) -> int:
+    from raida.skills import SkillError, SkillNotFoundError, SkillStore, render_skill_md
+    from raida.skills.model import EXAMPLE_PATH, REFERENCE_PATH
+
+    config = _load(args)
+    store = SkillStore(config.skills_dir)
+    if args.action == "show":
+        try:
+            skill = store.load(args.name)
+        except (SkillNotFoundError, SkillError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(render_skill_md(skill), end="")
+        for label, text in ((EXAMPLE_PATH, skill.example), (REFERENCE_PATH, skill.reference)):
+            if text:
+                print(f"\n----- {label} -----\n{text}")
+        return 0
+    skills, problems = store.list()
+    for info in skills:
+        origin = "" if info.origin == "user" else f" [{info.origin}]"
+        print(f"@{info.name}{origin}  {info.title}: {info.description}")
+    for problem in problems:
+        print(f"error: {problem.path}: {problem.error}", file=sys.stderr)
+    print(f"skills folder: {config.skills_dir}", file=sys.stderr)
+    return 1 if problems else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="raida", description="Offline source-processing harness")
     parser.add_argument(
@@ -108,7 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_process.add_argument("--language", default="auto")
     p_process.set_defaults(func=cmd_process)
 
-    p_ask = sub.add_parser("ask", help="run an instruction against a session's sources")
+    p_ask = sub.add_parser(
+        "ask", help="run an instruction (or @skill-name and more text) against a session"
+    )
     p_ask.add_argument("session_id")
     p_ask.add_argument("instruction")
     p_ask.set_defaults(func=cmd_ask)
@@ -118,12 +147,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--format", choices=["txt", "md", "pdf", "docx"], default="md")
     p_export.add_argument("--output", default=None)
     p_export.set_defaults(func=cmd_export)
+
+    p_skills = sub.add_parser("skills", help="list skills, or print one as SKILL.md")
+    p_skills.add_argument("action", nargs="?", choices=["list", "show"], default="list")
+    p_skills.add_argument("name", nargs="?", help="the skill to show")
+    p_skills.set_defaults(func=cmd_skills)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "action", None) == "show" and not args.name:
+        parser.error("raida skills show needs the name of a skill")
     return int(args.func(args))
 
 

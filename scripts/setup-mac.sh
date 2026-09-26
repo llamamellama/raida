@@ -1,7 +1,22 @@
 #!/usr/bin/env bash
 # One-shot setup for an Apple Silicon Mac: Homebrew packages, Python environment, model pulls.
 # Re-runnable. Needs network once; afterwards raida runs offline.
+#
+#   --skip-llm             do not download the LLM named in raida.toml (it is already
+#                          downloaded, or you run your own model server)
+#   --skip-speech-models   do not download the Parakeet and Whisper weights (Apple speech only,
+#                          or no access to Hugging Face)
 set -euo pipefail
+
+skip_llm=0
+skip_speech=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-llm) skip_llm=1 ;;
+    --skip-speech-models) skip_speech=1 ;;
+    *) echo "usage: $0 [--skip-llm] [--skip-speech-models]" >&2; exit 2 ;;
+  esac
+done
 
 cd "$(dirname "$0")/.."
 
@@ -42,16 +57,30 @@ fi
 
 MODEL="$(uv run python -c 'from raida.config import load_config; print(load_config().llm.model)')"
 
-echo "==> Starting Ollama (if not running) with settings for this app"
-export OLLAMA_NUM_PARALLEL=1 OLLAMA_KEEP_ALIVE=1h OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0
-export OLLAMA_NO_CLOUD=1
-if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
-  nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-  sleep 2
+if (( ! skip_llm )); then
+  echo "==> Starting Ollama (if not running) with settings for this app"
+  export OLLAMA_NUM_PARALLEL=1 OLLAMA_KEEP_ALIVE=1h OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0
+  export OLLAMA_NO_CLOUD=1
+  if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+    nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+    sleep 2
+  fi
 fi
 
-echo "==> Pulling models (one time, needs network)"
-./scripts/pull-models.sh "$MODEL"
+# Written out rather than built as an array: macOS ships bash 3.2, where an empty array
+# expanded under `set -u` is an error.
+if (( skip_llm && skip_speech )); then
+  echo "==> Skipping model downloads (--skip-llm --skip-speech-models)"
+elif (( skip_llm )); then
+  echo "==> Pulling speech-to-text weights (one time, needs network)"
+  ./scripts/pull-models.sh --skip-llm
+elif (( skip_speech )); then
+  echo "==> Pulling the LLM (one time, needs network)"
+  ./scripts/pull-models.sh --skip-speech-models "$MODEL"
+else
+  echo "==> Pulling models (one time, needs network)"
+  ./scripts/pull-models.sh "$MODEL"
+fi
 
 MEM_GB=$(( $(sysctl -n hw.memsize) / 1024 / 1024 / 1024 ))
 if (( MEM_GB <= 96 )); then
@@ -77,5 +106,6 @@ Done. Start the model server and the app, each in its own terminal:
   make llm MODEL=${MODEL}   # llama-server on the weights Ollama downloaded
   make dev                  # the app, at http://127.0.0.1:8765
 
-With llm.backend = "ollama" in raida.toml, run `make ollama` instead of `make llm`.
+With llm.backend = "ollama" in raida.toml, run \`make ollama\` instead of \`make llm\`. With your
+own model server, start it at llm.base_url and run only \`make dev\`.
 MSG

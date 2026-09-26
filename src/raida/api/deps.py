@@ -19,6 +19,7 @@ class AppState:
     config: Config
     db: Database
     scheduler: Scheduler
+    ui_version: str = ""  # hash of the web UI files this server serves
 
 
 def get_state(request: Request) -> AppState:

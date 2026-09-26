@@ -60,3 +60,7 @@ class EventBus:
 
     def subscriber_count(self) -> int:
         return sum(len(s) for s in self._subscribers.values())
+
+    def watching(self, session_id: str) -> bool:
+        """Whether a browser tab (or the CLI) has the session open."""
+        return bool(self._subscribers.get(session_id))

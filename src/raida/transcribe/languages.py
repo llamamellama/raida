@@ -99,3 +99,48 @@ def base_language(code: str | None) -> str | None:
     if not code or code.lower() == "auto":
         return None
     return code.replace("_", "-").split("-")[0].lower()
+
+
+# The languages offered in the UI (web/util.js LANGUAGES, without "auto"), by the name used when
+# the model is told which language to write in. A test keeps the two lists in step.
+WRITTEN_LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "sv": "Swedish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "nb": "Norwegian",
+    "pl": "Polish",
+    "cs": "Czech",
+    "ru": "Russian",
+    "uk": "Ukrainian",
+    "el": "Greek",
+    "hu": "Hungarian",
+    "ro": "Romanian",
+    "tr": "Turkish",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Simplified Chinese",
+    "zh-TW": "Traditional Chinese as written in Taiwan",
+    "zh-HK": "Traditional Chinese as written in Hong Kong",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "he": "Hebrew",
+    "id": "Indonesian",
+    "vi": "Vietnamese",
+    "th": "Thai",
+}
+
+
+def written_language_name(code: str | None) -> str | None:
+    """Name of a UI language code for a writing instruction ("zh-tw" -> Traditional Chinese
+    as written in Taiwan); None for "auto", empty or unknown codes."""
+    if not code:
+        return None
+    wanted = code.replace("_", "-").lower()
+    return next((n for c, n in WRITTEN_LANGUAGE_NAMES.items() if c.lower() == wanted), None)

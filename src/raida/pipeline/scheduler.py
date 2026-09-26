@@ -24,23 +24,28 @@ from raida.models import (
     Message,
     ProcessedSource,
     SessionDetail,
+    SessionSnapshot,
     Source,
     SourceNotes,
     new_id,
     utc_now,
 )
-from raida.pipeline import cache
+from raida.pipeline import cache, ingest
 from raida.pipeline.events import Event, EventBus
-from raida.pipeline.ingest import remove_stored_file_if_unreferenced
 from raida.pipeline.resources import ResourcePool
 from raida.pipeline.stages import docx, media, ocr, pdf, subtitles, text
 from raida.script import normalize_script
+from raida.skills import SkillNotFoundError, SkillStore, parse_command, render, unescape
 from raida.transcribe.base import Transcript
 from raida.transcribe.format import transcript_markdown
 from raida.transcribe.languages import base_language
 from raida.transcribe.registry import TranscriberRegistry
 
 log = logging.getLogger(__name__)
+
+# How long a question waits for its session's read-ahead to finish. That read is the prefix the
+# question needs; cancelling it made the question start over on another server slot.
+PREPARE_WAIT_S = 900.0
 
 
 class Scheduler:
@@ -53,6 +58,7 @@ class Scheduler:
         self.llm = build_llm_backend(config)
         self.synthesizer = Synthesizer(config, db, self.llm, self.resources.llm)
         self.notes = NoteTaker(config, db, self.llm, self.resources.llm)
+        self.skills = SkillStore(config.skills_dir)
         self._source_tasks: dict[str, asyncio.Task[None]] = {}
         self._prepare_tasks: dict[str, asyncio.Task[None]] = {}
         self._message_tasks: dict[str, asyncio.Task[None]] = {}
@@ -120,6 +126,108 @@ class Scheduler:
             artifacts=self.db.list_artifacts(session_id),
         )
 
+    def stream_snapshot(self, session_id: str) -> SessionSnapshot:
+        """What a tab receives when it connects: the session, and the library to choose from."""
+        return SessionSnapshot(**dict(self.snapshot(session_id)), library=self.db.list_library())
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete a session with its conversation and exports. Its files stay in the library
+        for the other sessions and for new ones."""
+        messages = await asyncio.to_thread(self.db.list_messages, session_id)
+        tasks = [self._message_tasks.get(m.id) for m in messages]
+        tasks.append(self._prepare_tasks.get(session_id))
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        used = await asyncio.to_thread(self.db.session_source_ids, session_id)
+        await asyncio.to_thread(self.db.delete_session, session_id)
+        for source_id in used:  # their use counts changed
+            source = await asyncio.to_thread(self.db.get_source, source_id)
+            self.events.publish(Event("source.updated", source.model_dump()))
+
+    # -- the library, and the files each session uses ----------------------------------------
+
+    async def add_source(self, session_id: str, candidate: Source) -> Source:
+        """Put a file in the library, or find it there by its content, and use it in the
+        session. A file already in the library is not processed again: dropped into a second
+        session it is ready at once, or shares the run in progress. One that failed or was
+        cancelled runs again, with the language given now when one is given."""
+        await asyncio.to_thread(self.db.get_session, session_id)
+        source, created = await asyncio.to_thread(self.db.add_to_library, candidate)
+        if not created:
+            source = await self._reuse(source, candidate)
+        # Attached before the pipeline starts, so the session hears when it finishes.
+        source = await self.attach_source(session_id, source.id)
+        if created:
+            log.info("source_added", extra={"source_id": source.id, "kind": source.kind})
+            self.submit_source(source.id)
+        return source
+
+    async def _reuse(self, existing: Source, candidate: Source) -> Source:
+        """The library has this content already. Keep its copy (the new upload is deleted),
+        unless that copy is gone and the new one can replace it; a run that failed or was
+        cancelled takes the language given now."""
+        fields: dict[str, Any] = {}
+        if await asyncio.to_thread(Path(existing.stored_path).is_file):
+            await asyncio.to_thread(
+                ingest.discard_upload, self.config, Path(candidate.stored_path), existing
+            )
+        else:
+            fields.update(stored_path=candidate.stored_path, managed=candidate.managed)
+        if existing.status in ("failed", "cancelled") and base_language(candidate.language):
+            fields["language"] = candidate.language
+        return await self._set_source(existing.id, **fields) if fields else existing
+
+    async def attach_source(self, session_id: str, source_id: str) -> Source:
+        """Use a library file in a session. Nothing is processed again, except a file whose
+        run failed or was cancelled: asking for it here runs it again."""
+        await asyncio.to_thread(self.db.get_session, session_id)
+        source = await asyncio.to_thread(self.db.get_source, source_id)
+        added = await asyncio.to_thread(self.db.attach_source, session_id, source_id)
+        if source.status in ("failed", "cancelled"):
+            await self.retry_source(source_id)
+        if added:
+            await self._uses_changed(session_id, source_id)
+        return await asyncio.to_thread(self.db.get_source, source_id)
+
+    async def detach_source(self, session_id: str, source_id: str) -> None:
+        """Stop using a file in a session. It stays in the library (and keeps processing)."""
+        if not await asyncio.to_thread(self.db.detach_source, session_id, source_id):
+            raise NotFoundError(f"session {session_id} does not use source {source_id}")
+        await self._uses_changed(session_id, source_id)
+
+    async def delete_source(self, source_id: str) -> None:
+        """Remove a file from the library and from every session that uses it, with its
+        uploaded copy, decoded audio, processed text and notes."""
+        source = await self.cancel_source(source_id)
+        sessions = await asyncio.to_thread(self.db.sessions_using, source_id)
+        await asyncio.to_thread(self.db.delete_source, source_id)
+        processed = await asyncio.to_thread(self.db.forget_processed, source.sha256)
+        await asyncio.to_thread(ingest.remove_file_data, self.config, source, processed)
+        log.info("source_deleted", extra={"source_id": source_id, "sessions": len(sessions)})
+        self.events.publish(Event("source.removed", {"source_id": source_id}))
+        for session_id in sessions:
+            await self._uses_changed(session_id, None)
+
+    async def _uses_changed(self, session_id: str, source_id: str | None) -> None:
+        """A session started or stopped using a file: its tabs get the new list, every tab the
+        file's new use count; waiting questions may start, and the session is read ahead."""
+        if source_id is not None:  # first, so tabs know the file before the list names it
+            source = await asyncio.to_thread(self.db.get_source, source_id)
+            self.events.publish(Event("source.updated", source.model_dump()))
+        ids = await asyncio.to_thread(self.db.session_source_ids, session_id)
+        self.events.publish(
+            Event(
+                "session.sources",
+                {"session_id": session_id, "source_ids": ids},
+                session_id=session_id,
+            )
+        )
+        await self._maybe_start_waiting_messages(session_id)
+        await self._session_settled(session_id)
+
     # -- source control --------------------------------------------------------------------
 
     def submit_source(self, source_id: str) -> None:
@@ -148,6 +256,19 @@ class Scheduler:
         self.submit_source(source_id)
         return source
 
+    async def rename_source(self, source_id: str, title: str) -> Source:
+        """Give a file the name shown in every session and given to the model, which cites
+        sources by name. An empty name brings back the file's own name. Nothing is processed
+        again; the open sessions using the file read their new prompt prefix ahead."""
+        source = await asyncio.to_thread(self.db.get_source, source_id)
+        title = " ".join(title.split()) or source.original_name
+        if title == source.title:
+            return source
+        source = await self._set_source(source_id, title=title)
+        for session_id in await asyncio.to_thread(self.db.sessions_using, source_id):
+            await self._session_settled(session_id, watched_only=True)
+        return source
+
     async def set_language(self, source_id: str, language: str) -> Source:
         source = await asyncio.to_thread(self.db.get_source, source_id)
         if source.language == language:
@@ -157,27 +278,16 @@ class Scheduler:
             return await self.retry_source(source_id)
         return source
 
-    async def remove_source(self, source_id: str) -> None:
-        source = await self.cancel_source(source_id)
-        await asyncio.to_thread(self.db.delete_source, source_id)
-        await asyncio.to_thread(remove_stored_file_if_unreferenced, self.db, source)
-        self.events.publish(
-            Event("source.removed", {"source_id": source_id}, session_id=source.session_id)
-        )
-        await self._maybe_start_waiting_messages(source.session_id)
-
     async def _set_source(self, source_id: str, **fields: Any) -> Source:
+        # Library events go to every tab: any session may list the file.
         source = await asyncio.to_thread(self.db.update_source, source_id, **fields)
-        self.events.publish(
-            Event("source.updated", source.model_dump(), session_id=source.session_id)
-        )
+        self.events.publish(Event("source.updated", source.model_dump()))
         return source
 
     def _progress_reporter(
         self, source: Source, stage: str, lo: float, hi: float
     ) -> Callable[[float], None]:
         loop = self._loop
-        session_id = source.session_id
 
         def report(fraction: float) -> None:
             fraction = max(0.0, min(1.0, fraction))
@@ -185,7 +295,6 @@ class Scheduler:
             event = Event(
                 "job.progress",
                 {"source_id": source.id, "stage": stage, "progress": round(value, 3)},
-                session_id=session_id,
             )
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(self.events.publish, event)
@@ -236,8 +345,7 @@ class Scheduler:
                 source.id, status="failed", error=f"{type(exc).__name__}: {exc}"[:1000]
             )
         finally:
-            await self._maybe_start_waiting_messages(source.session_id)
-            await self._source_settled(source.session_id)
+            await self._source_finished(source.id)
 
     async def _take_notes(
         self, source: Source, processed_key: str, doc: ProcessedSource
@@ -291,7 +399,7 @@ class Scheduler:
             existing = await self.notes.load(key)
             if existing is not None:
                 if (source.meta.get("notes") or {}).get("status") != "done":
-                    # Taken for the same file in another session.
+                    # Taken already, for example before the library replaced per-session rows.
                     await self._set_source(
                         source.id, meta={**source.meta, "notes": _notes_meta(existing)}
                     )
@@ -302,7 +410,7 @@ class Scheduler:
                 cache.load_processed,
                 path,
                 source.id,
-                source.original_name,
+                source.title,
                 self.config.llm.chars_per_token,
             )
             if not self.notes.needed(doc):
@@ -323,11 +431,22 @@ class Scheduler:
         except Exception:
             log.exception("notes_backfill_failed", extra={"source_id": source.id})
             return
-        await self._maybe_start_waiting_messages(source.session_id)
-        await self._source_settled(source.session_id)
+        await self._source_finished(source.id)
 
-    async def _source_settled(self, session_id: str) -> None:
-        """Prepare the session once none of its sources is still processing."""
+    async def _source_finished(self, source_id: str) -> None:
+        """A file finished processing or noting: questions waiting for it in any session may
+        start, and the open sessions that use it are read ahead."""
+        sessions = await asyncio.to_thread(self.db.sessions_using, source_id)
+        for session_id in sessions:
+            await self._maybe_start_waiting_messages(session_id)
+            await self._session_settled(session_id, watched_only=True)
+
+    async def _session_settled(self, session_id: str, *, watched_only: bool = False) -> None:
+        """Read the session ahead once none of its sources is still processing. When a file
+        finishes, only sessions open in a tab are read (the others are read when opened), so a
+        file used in many sessions does not queue a long read for each of them."""
+        if watched_only and not self.events.watching(session_id):
+            return
         try:
             sources = await asyncio.to_thread(self.db.list_sources, session_id)
         except NotFoundError:
@@ -409,9 +528,7 @@ class Scheduler:
         notes: dict[str, SourceNotes] = {}
         for s in ready:
             path = s.processed_path or ""
-            docs.append(
-                await asyncio.to_thread(cache.load_processed, path, s.id, s.original_name, cpt)
-            )
+            docs.append(await asyncio.to_thread(cache.load_processed, path, s.id, s.title, cpt))
             note = await self.notes.load(Path(path).stem)
             if note is not None:
                 notes[s.id] = note
@@ -442,7 +559,7 @@ class Scheduler:
             doc = cache.load_processed(
                 entry.processed_path,
                 source.id,
-                source.original_name,
+                source.title,
                 self.config.llm.chars_per_token,
             )
             doc.meta = {**doc.meta, "cache_hit": True}
@@ -466,7 +583,7 @@ class Scheduler:
         meta = {**meta, "sha256": source.sha256}
         return ProcessedSource(
             source_id=source.id,
-            title=source.original_name,
+            title=source.title,
             kind=source.kind,
             meta=meta,
             text_markdown=markdown,
@@ -582,10 +699,29 @@ class Scheduler:
     async def submit_message(
         self, session_id: str, content: str, run_with_ready_only: bool, full_text: bool = False
     ) -> Message:
+        """Queue an instruction. ``@name rest`` runs the skill ``name`` with ``rest`` as its
+        arguments; ``@@`` at the start sends a literal at sign."""
         content = content.strip()
         if not content:
             raise ValueError("Instruction must not be empty")
         await asyncio.to_thread(self.db.get_session, session_id)
+        command = parse_command(content)
+        use = prompt = None
+        if command is None:
+            content = unescape(content)
+        else:
+            try:
+                skill = await asyncio.to_thread(self.skills.load, command.name)
+            except SkillNotFoundError:
+                names = await asyncio.to_thread(self.skills.names)
+                listed = ", ".join(f"@{n}" for n in names) or "none yet"
+                raise ValueError(
+                    f"There is no skill named @{command.name}. Skills: {listed}. To send text "
+                    "that starts with @, begin it with @@."
+                ) from None
+            use, prompt = render(skill, command.arguments)
+            full_text = full_text or skill.full_text
+            log.info("skill_run", extra={"skill": skill.name, "session_id": session_id})
         now = utc_now()
         user = Message(
             id=new_id(),
@@ -593,6 +729,8 @@ class Scheduler:
             role="user",
             content=content,
             status="done",
+            skill=use,
+            prompt=prompt,
             created_at=now,
             updated_at=now,
         )
@@ -603,6 +741,7 @@ class Scheduler:
             status="pending",
             run_with_ready_only=run_with_ready_only,
             full_text=full_text,
+            skill=use,
             created_at=now,
             updated_at=now,
         )
@@ -657,23 +796,32 @@ class Scheduler:
         session_id = message.session_id
         try:
             history_all = await asyncio.to_thread(self.db.list_messages, session_id)
-            instruction = next(
+            # The user message is created with the same timestamp as its answer.
+            asked = next(
                 (
-                    m.content
+                    m
                     for m in reversed(history_all)
                     if m.role == "user" and m.created_at <= message.created_at
                 ),
-                "",
+                None,
             )
-            history = [
-                m
-                for m in history_all
-                if m.created_at < message.created_at and m.content != instruction
-            ]
+            instruction = "" if asked is None else (asked.prompt or asked.content)
+            skill = None if asked is None else asked.skill
+            history = [m for m in history_all if m.created_at < message.created_at]
             sources = await asyncio.to_thread(self.db.list_sources, session_id)
             docs, notes = await self._load_docs(sources)
             languages = [s.language for s in sources if s.status == "ready" and s.processed_path]
             await self._set_message(message_id, status="streaming", content="")
+            reading = self._prepare_tasks.get(session_id)
+            if reading is not None and not reading.done():
+                self.events.publish(
+                    Event(
+                        "message.progress",
+                        {"message_id": message_id, "detail": "Finishing reading the sources"},
+                        session_id=session_id,
+                    )
+                )
+                await asyncio.wait({reading}, timeout=PREPARE_WAIT_S)
 
             async def emit(delta: str) -> None:
                 await asyncio.to_thread(self.db.append_message_content, message_id, delta)
@@ -703,14 +851,16 @@ class Scheduler:
                 progress=progress,
                 full_text=message.full_text,
                 source_languages=languages,
+                skill=skill,
             )
             final = await asyncio.to_thread(self.db.get_message, message_id)
             await self._set_message(
                 message_id, status="done", strategy=result.strategy, token_usage=result.usage
             )
+            named_after = instruction if skill is None else f"{skill.title}\n{skill.body}"
             self._spawn(
                 self._after_answer(
-                    session_id, history_all, instruction, final.content, result.script
+                    session_id, history_all, named_after, final.content, result.script
                 )
             )
         except asyncio.CancelledError:

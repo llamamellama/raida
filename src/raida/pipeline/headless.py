@@ -35,8 +35,7 @@ async def process_files(config: Config, paths: list[Path], language: str = "auto
                 print(f"error: not a file: {path}", file=sys.stderr)
                 return 2
             sha, size = await asyncio.to_thread(ingest.hash_file, path)
-            source = ingest.build_source(
-                session_id=session.id,
+            candidate = ingest.build_source(
                 original_name=path.name,
                 stored_path=path.resolve(),
                 sha256=sha,
@@ -44,13 +43,14 @@ async def process_files(config: Config, paths: list[Path], language: str = "auto
                 language=language,
                 managed=False,
             )
-            await asyncio.to_thread(db.create_source, source)
-            scheduler.submit_source(source.id)
+            # Into the library, like a file added in the app: a file processed before is not
+            # processed again.
+            await scheduler.add_source(session.id, candidate)
         await _wait_sources(scheduler, session.id)
         failed = 0
         for source in await asyncio.to_thread(db.list_sources, session.id):
             print(
-                f"\n===== {source.original_name} [{source.status}] "
+                f"\n===== {source.title} [{source.status}] "
                 f"tokens={source.token_estimate} meta={source.meta}\n"
             )
             if source.status == "ready" and source.processed_path:

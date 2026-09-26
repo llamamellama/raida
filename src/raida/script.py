@@ -55,6 +55,26 @@ DIRECTIVES: dict[str, str] = {
     "zh-CN": "（若以中文回答，请使用简体字。）",
 }
 
+# Said when the answer's language is set rather than taken from the instruction (a skill's
+# language option): an unconditional request, in the language asked for.
+FIRM_DIRECTIVES: dict[str, str] = {
+    "zh-TW": "請用繁體中文（臺灣用語）撰寫回答。",
+    "zh-HK": "請用繁體中文（香港用語）撰寫回答。",
+    "zh-Hant": "請用繁體中文撰寫回答。",
+    "zh-CN": "请用简体中文撰写回答。",
+}
+
+# Language codes whose written form is one Chinese script.
+_CODE_TARGETS: dict[str, str] = {
+    "zh-tw": "zh-TW",
+    "zh-hant": "zh-Hant",
+    "zh-hk": "zh-HK",
+    "zh": "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh-hans": "zh-CN",
+    "zh-sg": "zh-CN",
+}
+
 _HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0002ffff]")
 _KANA_HANGUL = re.compile(r"[぀-ヿㇰ-ㇿ가-힯ᄀ-ᇿ]")
 _ASK_TRADITIONAL = re.compile(r"繁體|繁体|正體|traditional\s+chinese", re.IGNORECASE)
@@ -154,6 +174,13 @@ def _asked_script(instruction: str) -> HanScript | None:
     if max(last.values()) < 0:
         return None
     return "hans" if last["hans"] > last["hant"] else "hant"
+
+
+def target_for_language(code: str | None) -> str | None:
+    """Target script for a language code: "zh-TW" -> "zh-TW", "zh" -> "zh-CN"; None otherwise."""
+    if not code:
+        return None
+    return _CODE_TARGETS.get(code.replace("_", "-").lower())
 
 
 def fold_han(text: str) -> str:

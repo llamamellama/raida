@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>raida</title>
+<meta name="raida-ui-version" content="{{ui_version}}">
+<title>Raida</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%230b57d0%27/%3E%3Ctext x=%2716%27 y=%2722%27 font-family=%27Helvetica,Arial%27 font-size=%2718%27 font-weight=%27700%27 fill=%27white%27 text-anchor=%27middle%27%3Er%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/styles.css">
 <script src="/static/vendor/marked.umd.js"></script>
@@ -11,13 +12,10 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">raida</span>
-    <span class="brand-sub">offline source harness</span>
-  </div>
+  <span class="brand-mark">Raida</span>
   <div class="session-controls">
     <select id="session-select" class="session-select" aria-label="Session"></select>
-    <button id="new-session" class="btn btn-quiet" type="button" title="New session">New</button>
+    <button id="new-session" class="btn btn-quiet" type="button" title="New session, named after its first question">New</button>
     <button id="rename-session" class="btn btn-quiet" type="button" title="Rename session">Rename</button>
     <button id="delete-session" class="btn btn-quiet btn-danger" type="button" title="Delete session">Delete</button>
   </div>
@@ -25,42 +23,73 @@
 </header>
 
 <main class="layout">
-  <aside class="sources-pane">
-    <div class="pane-header">
-      <h2>Sources</h2>
-      <span id="sources-summary" class="pane-summary"></span>
+  <aside class="sidebar">
+    <div class="sidebar-tabs" role="tablist" aria-label="Sidebar">
+      <button id="tab-sources" class="sidebar-tab" type="button" role="tab" aria-selected="true" aria-controls="panel-sources">Sources <span id="tab-sources-count" class="tab-count"></span></button>
+      <button id="tab-skills" class="sidebar-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-skills" tabindex="-1">Skills <span id="tab-skills-count" class="tab-count"></span></button>
     </div>
-    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Add sources">
-      <div class="dropzone-inner">
+
+    <section id="panel-sources" class="sidebar-panel" role="tabpanel" aria-labelledby="tab-sources">
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Add sources">
         <div class="dropzone-title">Drop files here</div>
         <div class="dropzone-sub">text, markdown, pdf, docx, srt, vtt, audio, video</div>
         <div class="dropzone-actions">
-          <button id="pick-files" class="btn" type="button">Choose files</button>
-          <button id="add-from-library" class="btn btn-quiet" type="button" title="Reuse files already added in any session">From library</button>
-          <button id="add-by-path" class="btn btn-quiet" type="button" title="Reference a large local file without uploading">Add by path</button>
+          <button id="pick-files" class="btn btn-sm" type="button">Choose files</button>
+          <button id="add-by-path" class="btn btn-sm btn-quiet" type="button" title="Reference a large local file without uploading">Add by path</button>
         </div>
         <label class="lang-default">
           Language for new sources
           <select id="default-language"></select>
         </label>
+        <input id="file-input" type="file" multiple hidden>
       </div>
-      <input id="file-input" type="file" multiple hidden>
-    </div>
-    <div id="upload-progress" class="upload-progress" hidden></div>
-    <ul id="source-list" class="source-list" aria-live="polite"></ul>
+      <div id="upload-progress" class="upload-progress" hidden></div>
+      <div class="panel-scroll">
+        <div class="section-head">
+          <h2>In this session</h2>
+          <span id="sources-summary" class="pane-summary"></span>
+        </div>
+        <p id="session-sources-empty" class="section-empty" hidden>No sources yet. Drop files above, or add files from the library below.</p>
+        <ul id="source-list" class="source-list" aria-live="polite"></ul>
+
+        <div class="section-head">
+          <h2>Library</h2>
+          <span id="library-summary" class="pane-summary"></span>
+        </div>
+        <p class="section-note">Every file added in any session, transcribed and noted once. Add one to use it here; nothing is processed again.</p>
+        <input id="library-filter" class="library-filter" type="search" placeholder="Filter by name" aria-label="Filter the library" hidden>
+        <ul id="library-list" class="library-list" aria-label="Library"></ul>
+        <p id="library-empty" class="section-empty" hidden></p>
+      </div>
+    </section>
+
+    <section id="panel-skills" class="sidebar-panel" role="tabpanel" aria-labelledby="tab-skills" hidden>
+      <div class="panel-actions">
+        <button id="skill-new" class="btn btn-sm" type="button">New skill</button>
+        <button id="skill-import" class="btn btn-sm btn-quiet" type="button" title="A SKILL.md file, or a .zip or .skill archive of a skill folder">Import</button>
+      </div>
+      <p class="section-note">Saved instructions for every session. Type <code>@</code> at the start of the instruction box to run one, such as <code>@summary focus on the budget</code>.</p>
+      <pre id="skills-problems" class="source-error skills-problems" hidden></pre>
+      <div id="skills-list" class="skills-list panel-scroll"></div>
+      <input id="skill-import-file" type="file" accept=".md,.zip,.skill" hidden>
+    </section>
   </aside>
 
   <section class="chat-pane">
     <div id="message-list" class="message-list" aria-live="polite">
       <div class="empty-state" id="chat-empty">
         <h3>Add sources, then tell raida what to do with them.</h3>
-        <p>Files are transcribed and noted as soon as they are added, and stay in the library for every session.</p>
-        <p>Example: "Summarize these three sources into one article of about 800 words, with a short intro and a list of open questions."</p>
+        <p>Files are transcribed and noted as soon as they are added, and stay in the library for every session: add them to this one from the list on the left.</p>
+        <p>Example: "Summarize these three sources into one article of about 800 words, with a short intro and a list of open questions." Or type <code>@</code> to run a saved skill.</p>
         <p class="muted">Everything runs on this Mac. Nothing leaves the machine.</p>
       </div>
     </div>
     <form id="composer" class="composer">
-      <textarea id="instruction" rows="3" placeholder="Instruction for the sources in this session" aria-label="Instruction"></textarea>
+      <div class="composer-input">
+        <ul id="skill-menu" class="skill-menu" role="listbox" aria-label="Skills" hidden></ul>
+        <textarea id="instruction" rows="3" placeholder="Instruction for the sources in this session, or @ to run a skill" aria-label="Instruction" autocomplete="off"></textarea>
+        <div id="skill-chip" class="skill-chip" hidden></div>
+      </div>
       <div class="composer-row">
         <div class="composer-options">
           <label class="checkbox"><input id="ready-only" type="checkbox"> Run now with ready sources only</label>
@@ -87,19 +116,6 @@
   </form>
 </dialog>
 
-<dialog id="library-dialog" class="dialog dialog-wide">
-  <form method="dialog" id="library-form">
-    <h3>Add from library</h3>
-    <p class="muted">Every file added in any session. Processed text is reused, so these are ready at once. Files already in this session are shown checked.</p>
-    <div id="library-list" class="library-list"></div>
-    <p id="library-empty" class="muted" hidden>Nothing in the library yet. Drop files into a session first.</p>
-    <div class="dialog-actions">
-      <button class="btn btn-quiet" value="cancel" type="button" id="library-cancel">Cancel</button>
-      <button class="btn btn-primary" value="ok" type="submit">Add selected</button>
-    </div>
-  </form>
-</dialog>
-
 <dialog id="text-dialog" class="dialog dialog-wide">
   <div class="dialog-head">
     <h3 id="text-dialog-title">Processed text</h3>
@@ -107,6 +123,31 @@
   </div>
   <pre id="text-dialog-body" class="text-preview"></pre>
   <div id="text-dialog-md" class="text-preview message-body notes-preview" hidden></div>
+</dialog>
+
+<dialog id="skill-editor" class="dialog dialog-wide">
+  <form id="skill-form" class="skill-form" novalidate>
+    <h3 id="skill-form-title">New skill</h3>
+    <p id="skill-form-note" class="muted" hidden>This is a built-in skill. Saving keeps your own version of it; Reset in the list brings the original back.</p>
+    <div class="form-grid">
+      <label>Title<input name="title" maxlength="80" placeholder="Meeting minutes" required></label>
+      <label>Command<span class="input-prefix"><span>@</span><input name="name" maxlength="64" placeholder="meeting-minutes" required></span><small>Lowercase letters, digits and hyphens.</small></label>
+      <label class="span2">Description<input name="description" maxlength="1024" placeholder="What the skill produces; shown in the menu" required><small>Keep it under 200 characters if you will also use the skill in Claude's apps.</small></label>
+      <label class="span2">Instructions<textarea name="instructions" rows="8" required placeholder="What the model should do with the sources."></textarea><small><code>$ARGUMENTS</code> is replaced by what you type after the command; without it, that text is added at the end.</small></label>
+      <label class="span2"><span>Output example <span class="muted">(optional)</span></span><textarea name="example" rows="6" placeholder="An example of the format the answer should follow: headings, lists, length, tone. Its content is never copied."></textarea></label>
+      <label class="span2"><span>Reference <span class="muted">(optional)</span></span><textarea name="reference" rows="4" placeholder="Terms, names and conventions to apply, for example the correct spelling of names a recording gets wrong."></textarea></label>
+      <label>Answer language<select name="language"></select></label>
+      <label>Hint for what to type after the command<input name="argument_hint" maxlength="200" placeholder="focus or length (optional)"></label>
+      <label class="checkbox span2"><input type="checkbox" name="full_text"> Read full text (slower: minutes for several long recordings; for questions that need every word)</label>
+      <label class="checkbox span2"><input type="checkbox" name="think" checked> Think before answering (better structure; the answer starts later)</label>
+    </div>
+    <p id="skill-form-size" class="muted skill-form-size"></p>
+    <p id="skill-form-error" class="message-error" hidden></p>
+    <div class="dialog-actions">
+      <button class="btn btn-quiet" type="button" id="skill-cancel">Cancel</button>
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>

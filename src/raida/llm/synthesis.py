@@ -29,8 +29,19 @@ from raida.llm.base import ChatMessage, GenerationOptions, LlmBackend, LlmError,
 from raida.llm.chunking import split_markdown
 from raida.llm.gate import LlmGate
 from raida.llm.tokens import estimate_tokens
-from raida.models import Message, ProcessedSource, SourceNotes, Strategy
-from raida.script import AnswerScript, ScriptStream, answer_script, convert_to
+from raida.models import Message, ProcessedSource, SkillUse, SourceNotes, Strategy
+from raida.script import (
+    FIRM_DIRECTIVES,
+    AnswerScript,
+    ScriptStream,
+    answer_script,
+    convert_to,
+    han_script,
+    regional_target,
+    target_for_language,
+)
+from raida.skills.render import history_text
+from raida.transcribe.languages import base_language, written_language_name
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +55,7 @@ PREPARED_MEMORY = 32  # prefixes remembered as read ahead, for the progress mess
 INSTRUCTION_ALLOWANCE = 1_000
 REASONING_REPORT_S = 1.0
 SCRIPT_SAMPLE_CHARS = 1_500  # per source, to tell the script of the sources
+UNKNOWN = "?"
 
 
 @dataclass
@@ -100,10 +112,16 @@ class Synthesizer:
                 continue
             if not msg.content.strip():
                 continue
-            cost = self._tokens(msg.content)
+            # An earlier skill run shows as its command and what the skill does, not its prompt.
+            content = (
+                history_text(msg.content, msg.skill)
+                if msg.role == "user" and msg.skill is not None
+                else msg.content
+            )
+            cost = self._tokens(content)
             if used + cost > budget:
                 break
-            selected.append({"role": msg.role, "content": msg.content})
+            selected.append({"role": msg.role, "content": content})
             used += cost
         selected.reverse()
         return selected
@@ -127,7 +145,9 @@ class Synthesizer:
         instruction: str = "",
     ) -> FastPlan | None:
         """Prompt prefix for the fast path, or None when it does not apply: a long source has
-        no notes, or even overviews of every source exceed the synthesis budget."""
+        no notes, or even overviews of every source exceed the synthesis budget. When the notes
+        do not fit, the oldest turns of the conversation give way first, then sources fall back
+        to their overviews."""
         cfg = self.config
         history_msgs = self._history_messages(history)
         fixed = (
@@ -150,6 +170,13 @@ class Synthesizer:
                     forms[source.source_id] = "full"
                 else:
                     return None
+            content = self._form_tokens(sources, notes, forms)
+            budget = cfg.llm.interactive_budget_tokens
+            while history_msgs and fixed + content > budget:
+                # Drop a whole turn: the history must not start with an answer.
+                fixed -= self._tokens(history_msgs.pop(0)["content"])
+                while history_msgs and history_msgs[0]["role"] != "user":
+                    fixed -= self._tokens(history_msgs.pop(0)["content"])
             self._fit_forms(sources, notes, forms, fixed, instruction)
             if fixed + self._form_tokens(sources, notes, forms) > cfg.llm.synthesis_budget_tokens:
                 return None
@@ -258,21 +285,29 @@ class Synthesizer:
         notes: dict[str, SourceNotes] | None = None,
         full_text: bool = False,
         source_languages: list[str] | None = None,
+        skill: SkillUse | None = None,
     ) -> SynthesisResult:
-        script = answer_script(
-            instruction,
-            source_languages or [],
-            "\n".join(s.text_markdown[:SCRIPT_SAMPLE_CHARS] for s in sources),
-        )
+        """Answer ``instruction``. For a skill run, ``instruction`` is the rendered skill and
+        ``skill`` says how to pick the answer's language, whether to reason first, and which
+        words to search passages for (what the user typed, else the skill's instructions)."""
+        languages = source_languages or []
+        sample = "\n".join(s.text_markdown[:SCRIPT_SAMPLE_CHARS] for s in sources)
+        if skill is None:
+            script = answer_script(instruction, languages, sample)
+            search = instruction
+        else:
+            script = skill_script(skill, sources, languages, sample)
+            search = skill.arguments or skill.body
+        think = False if skill is not None and not skill.think else None
         async with self.gate.interactive():
             plan = None if full_text else self.plan_fast(sources, notes or {}, history, instruction)
             if plan is None:
                 if not full_text:
                     await progress("Some long sources have no notes; reading their full text")
                 return await self._run_full_text(
-                    instruction, sources, history, emit, progress, script
+                    instruction, sources, history, emit, progress, script, think
                 )
-            excerpts = self._excerpts(plan, instruction)
+            excerpts = self._excerpts(plan, search)
             final = prompts.instruction_message(_with_directive(instruction, script), excerpts)
             messages = [*plan.prefix, {"role": "user", "content": final}]
             log.info(
@@ -285,7 +320,7 @@ class Synthesizer:
                 },
             )
             read_ahead = plan.prefix_hash() in self._prepared
-            usage = await self._stream(messages, emit, progress, script.target, read_ahead)
+            usage = await self._stream(messages, emit, progress, script.target, read_ahead, think)
             return SynthesisResult(
                 strategy=plan.strategy, usage=self._usage_dict(usage), script=script.target
             )
@@ -307,6 +342,7 @@ class Synthesizer:
         progress: Progress,
         script_target: str | None,
         read_ahead: bool = False,
+        think_override: bool | None = None,
     ) -> Usage:
         # Servers truncate silently when a prompt exceeds the context, dropping the sources
         # first. Fail loudly instead; with accurate estimates the planner keeps us under this.
@@ -341,6 +377,8 @@ class Synthesizer:
         # llm.think = false answers without a reasoning phase (text starts at once, less
         # structure); otherwise the server's default applies.
         think = self.config.llm.think if isinstance(self.config.llm.think, bool) else None
+        if think_override is False:  # a skill set to answer without thinking first
+            think = False
         options = self._options(think=False if think is False else None)
         # Models drift between Traditional and Simplified Chinese; hold the answer to its script.
         converter = ScriptStream(script_target)
@@ -390,6 +428,7 @@ class Synthesizer:
         emit: Emit,
         progress: Progress,
         script: AnswerScript,
+        think: bool | None = None,
     ) -> SynthesisResult:
         strategy = self.plan(sources, instruction, history)
         log.info("synthesis_plan", extra={"strategy": strategy, "sources": len(sources)})
@@ -407,7 +446,7 @@ class Synthesizer:
             messages.append({"role": "assistant", "content": ACK})
         messages.extend(self._history_messages(history))
         messages.append({"role": "user", "content": _with_directive(instruction, script)})
-        usage = await self._stream(messages, emit, progress, script.target)
+        usage = await self._stream(messages, emit, progress, script.target, think_override=think)
         return SynthesisResult(
             strategy=strategy, usage=self._usage_dict(usage), script=script.target
         )
@@ -526,6 +565,59 @@ class Synthesizer:
             ]
             merged = "\n\n".join(notes)
         return merged
+
+
+def main_source_language(sources: list[ProcessedSource], languages: list[str]) -> str | None:
+    """The language most of the sources' text is in, weighted by length: the language set on
+    each source, or the one detected from its speech; for a source left on automatic, Chinese
+    when its text is mostly Chinese characters, otherwise unknown. None when unknown wins."""
+    weights: dict[str, int] = {}
+    for index, source in enumerate(sources):
+        code = languages[index] if index < len(languages) else "auto"
+        if not base_language(code):
+            code = str(source.meta.get("detected_language") or "auto")
+        if not base_language(code):
+            code = _chinese_code(source.text_markdown[:SCRIPT_SAMPLE_CHARS]) or UNKNOWN
+        weights[code] = weights.get(code, 0) + max(1, source.token_estimate)
+    if not weights:
+        return None
+    main = max(weights, key=lambda c: weights[c])
+    return None if main == UNKNOWN else main
+
+
+def _chinese_code(sample: str) -> str | None:
+    letters = sum(ch.isalpha() for ch in sample)
+    chinese = sum(1 for ch in sample if "\u4e00" <= ch <= "\u9fff")
+    script = han_script(sample)
+    if script is None or chinese < letters * 0.3:
+        return None
+    return "zh-Hant" if script == "hant" else "zh"
+
+
+def skill_script(
+    skill: SkillUse, sources: list[ProcessedSource], languages: list[str], sample: str
+) -> AnswerScript:
+    """Language directive and Chinese script target for a skill run, from its language option:
+    "instructions" follows the language of the skill's instructions and what the user added
+    (as a normal message does); "sources" the main language of the sources; a code, that
+    language. Chinese quoted in an answer in another language follows the sources' script."""
+    if skill.language == "instructions":
+        return answer_script(skill.body, languages, sample)
+    from_sources = answer_script("", languages, sample).target
+    by_sources = skill.language == "sources"
+    code = main_source_language(sources, languages) if by_sources else skill.language
+    if code is None:
+        return AnswerScript(from_sources, "Write the answer in the main language of the sources.")
+    target = target_for_language(code)
+    if target is not None:
+        if target == "zh-Hant" or (by_sources and base_language(code) == "zh"):
+            # Chinese of unknown script or region: take both from the sources' text.
+            fallback = "hans" if target == "zh-CN" else "hant"
+            target = regional_target(han_script(sample) or fallback, languages)
+        return AnswerScript(target, FIRM_DIRECTIVES[target])
+    name = written_language_name(code) or code
+    reason = ", the main language of the sources" if by_sources else ""
+    return AnswerScript(from_sources, f"Write the answer in {name}{reason}.")
 
 
 def _with_directive(instruction: str, script: AnswerScript) -> str:

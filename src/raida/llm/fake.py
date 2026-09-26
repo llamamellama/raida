@@ -27,6 +27,8 @@ class FakeLlmBackend:
         self.delay_s = delay_s
         self.calls: list[list[ChatMessage]] = []
         self.prefills: list[list[ChatMessage]] = []
+        self.prefills_done = 0
+        self.prefill_delay_s = 0.0  # tests set it to model a server still reading a prompt
         self.options: list[GenerationOptions] = []
 
     async def aclose(self) -> None:
@@ -86,6 +88,9 @@ class FakeLlmBackend:
 
     async def prefill(self, messages: list[ChatMessage], options: GenerationOptions) -> Usage:
         self.prefills.append(messages)
+        if self.prefill_delay_s:
+            await asyncio.sleep(self.prefill_delay_s)
+        self.prefills_done += 1
         joined = "\n".join(m["content"] for m in messages)
         return Usage(prompt_tokens=estimate_tokens(joined, self.config.chars_per_token))
 

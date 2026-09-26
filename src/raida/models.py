@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 SourceKind = Literal["text", "pdf", "audio", "video", "docx", "subtitles"]
 SourceStatus = Literal[
@@ -95,29 +95,16 @@ class Session(BaseModel):
     updated_at: str
 
 
-class LibraryEntry(BaseModel):
-    """One distinct file across all sessions, identified by content hash."""
-
-    sha256: str
-    source_id: str  # most recent source row carrying this file
-    original_name: str
-    kind: SourceKind
-    size_bytes: int
-    language: str
-    managed: bool
-    stored_path: str
-    status: SourceStatus
-    token_estimate: int | None = None
-    notes_ready: bool = False
-    session_ids: list[str] = Field(default_factory=list)
-    last_used_at: str
-
-
 class Source(BaseModel):
+    """One file in the library (ADR-0007): processed once, when it is first added, and usable
+    in any session. A session uses a source through a row in ``session_sources``."""
+
     id: str
-    session_id: str
     kind: SourceKind
-    original_name: str
+    original_name: str  # the file's own name, as uploaded or found on disk
+    # The name shown in every session and given to the model, which cites sources by it. The
+    # user can rename a file; until then, and when the name is cleared, it is the file's name.
+    title: str = ""
     stored_path: str
     managed: bool = True
     sha256: str
@@ -131,6 +118,19 @@ class Source(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
+    # Read from session_sources, not stored: how many sessions use the file and when one last
+    # added it (the library lists recently used files first).
+    sessions: int = 0
+    last_used_at: str | None = None
+
+    @model_validator(mode="after")
+    def _title_defaults_to_file_name(self) -> Source:
+        if not self.title:
+            self.title = self.original_name
+        return self
+
+
+SOURCE_COMPUTED_FIELDS = frozenset({"sessions", "last_used_at"})
 
 
 class Job(BaseModel):
@@ -146,6 +146,21 @@ class Job(BaseModel):
     created_at: str
 
 
+class SkillUse(BaseModel):
+    """A skill as it was when a message invoked it, so the message stays reproducible after the
+    skill is edited or removed."""
+
+    name: str
+    title: str
+    description: str
+    arguments: str = ""  # what the user typed after @name
+    body: str = ""  # the skill's instructions with the arguments filled in
+    language: str = "instructions"
+    full_text: bool = False
+    think: bool = True
+    revision: str = ""  # hash of the skill's files when it ran
+
+
 class Message(BaseModel):
     id: str
     session_id: str
@@ -155,6 +170,8 @@ class Message(BaseModel):
     strategy: Strategy | None = None
     run_with_ready_only: bool = False
     full_text: bool = False  # read every source in full instead of long sources' notes
+    skill: SkillUse | None = None  # set on both messages of a skill invocation
+    prompt: str | None = None  # user message of a skill: the instruction the model was given
     token_usage: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     created_at: str
@@ -219,9 +236,16 @@ class SourceNotes(BaseModel):
 
 class SessionDetail(BaseModel):
     session: Session
-    sources: list[Source]
+    sources: list[Source]  # the library files this session uses, in the order they were added
     messages: list[Message]
     artifacts: list[Artifact]
+
+
+class SessionSnapshot(SessionDetail):
+    """What a tab receives when it connects: the session and the whole library, so it can
+    offer every processed file for this session."""
+
+    library: list[Source]
 
 
 class ComponentStatus(BaseModel):

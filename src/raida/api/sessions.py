@@ -46,7 +46,6 @@ async def patch_session(session_id: str, body: SessionPatch, state: State) -> Se
 
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: str, state: State) -> None:
-    sources = await asyncio.to_thread(state.db.list_sources, session_id)
-    for source in sources:
-        await state.scheduler.remove_source(source.id)
-    await asyncio.to_thread(state.db.delete_session, session_id)
+    """Delete the session's conversation and exports. Its files stay in the library."""
+    await asyncio.to_thread(state.db.get_session, session_id)
+    await state.scheduler.delete_session(session_id)

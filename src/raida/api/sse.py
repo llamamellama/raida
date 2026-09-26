@@ -1,4 +1,5 @@
-"""Server-Sent Events: a snapshot of the session, then live events, with keep-alive pings."""
+"""Server-Sent Events: a snapshot of the session and the library, the server's UI version,
+then live events, with keep-alive pings."""
 
 from __future__ import annotations
 
@@ -20,8 +21,11 @@ def session_event_stream(state: AppState, session_id: str) -> EventSourceRespons
     async def generator() -> AsyncIterator[dict[str, str]]:
         queue = bus.subscribe(session_id)
         try:
-            snapshot = await asyncio.to_thread(state.scheduler.snapshot, session_id)
+            snapshot = await asyncio.to_thread(state.scheduler.stream_snapshot, session_id)
             yield {"event": "snapshot", "data": snapshot.model_dump_json()}
+            # A tab whose page came from an older server (it reconnects after a restart on
+            # its own) compares this with its own version and reloads.
+            yield {"event": "app.version", "data": json.dumps({"ui": state.ui_version})}
             if state.scheduler.last_health is not None:
                 yield {
                     "event": "system.status",

@@ -1,6 +1,8 @@
--- raida schema, version 3. Applied to fresh databases via PRAGMA user_version; existing
+-- raida schema, version 6. Applied to fresh databases via PRAGMA user_version; existing
 -- databases are upgraded step by step in Database.migrate (v2 added sessions.title_auto,
--- v3 added messages.full_text and the notes table).
+-- v3 added messages.full_text and the notes table, v4 messages.skill and messages.prompt,
+-- v5 turned per-session source rows into one library with session_sources, ADR-0007,
+-- v6 added sources.title, the name the user can give a file).
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -11,14 +13,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at  TEXT NOT NULL
 );
 
+-- The library: one row per file (content hash), with its processing state. Sessions use files
+-- through session_sources; deleting a session leaves its files here for the others.
 CREATE TABLE IF NOT EXISTS sources (
     id              TEXT PRIMARY KEY,
-    session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     kind            TEXT NOT NULL,
-    original_name   TEXT NOT NULL,
+    original_name   TEXT NOT NULL,             -- the file's own name
+    title           TEXT NOT NULL DEFAULT '',  -- the name shown and given to the model
     stored_path     TEXT NOT NULL,
     managed         INTEGER NOT NULL DEFAULT 1,
-    sha256          TEXT NOT NULL,
+    sha256          TEXT NOT NULL UNIQUE,
     size_bytes      INTEGER NOT NULL,
     language        TEXT NOT NULL DEFAULT 'auto',
     status          TEXT NOT NULL,
@@ -30,7 +34,14 @@ CREATE TABLE IF NOT EXISTS sources (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sources_session ON sources(session_id);
+
+CREATE TABLE IF NOT EXISTS session_sources (
+    session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    source_id   TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_sources_source ON session_sources(source_id);
 
 CREATE TABLE IF NOT EXISTS messages (
     id                   TEXT PRIMARY KEY,
@@ -41,6 +52,8 @@ CREATE TABLE IF NOT EXISTS messages (
     strategy             TEXT,
     run_with_ready_only  INTEGER NOT NULL DEFAULT 0,
     full_text            INTEGER NOT NULL DEFAULT 0,
+    skill                TEXT,               -- JSON SkillUse when the message invoked a skill
+    prompt               TEXT,               -- the rendered skill instruction (user message)
     token_usage          TEXT NOT NULL DEFAULT '{}',
     error                TEXT,
     created_at           TEXT NOT NULL,

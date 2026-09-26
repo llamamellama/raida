@@ -15,6 +15,7 @@ export function initChat(store, els) {
     try {
       await api.sendMessage(sessionId(), content, els.readyOnly.checked, els.fullText.checked);
       els.instruction.value = "";
+      els.instruction.dispatchEvent(new Event("input")); // clears the skill line and menu
     } catch (err) { toast(err.message, true); } finally { els.send.disabled = false; }
   });
   els.instruction.addEventListener("keydown", (e) => {
@@ -49,12 +50,20 @@ export function initChat(store, els) {
   }
 
   function renderMessage(el, m, state) {
-    el.className = `message ${m.role} ${m.status}`;
-    if (m.role === "user") { el.textContent = m.content; return; }
+    el.className = `message ${m.role} ${m.status}${m.skill ? " has-skill" : ""}`;
+    if (m.role === "user") {
+      if (!m.skill) { el.textContent = m.content; return; }
+      // A skill run: the command as typed, and the instruction it expanded to.
+      el.innerHTML = `<div class="skill-line"><span class="pill skill-pill" title="${escapeAttr(m.skill.description)}">skill: ${escapeHtml(m.skill.title)}</span></div>`
+        + `<div class="user-text">${escapeHtml(m.content)}</div>`
+        + (m.prompt ? `<details class="skill-prompt"><summary>Instruction sent to the model</summary><pre>${escapeHtml(m.prompt)}</pre></details>` : "");
+      return;
+    }
     const head = [];
     if (m.status === "waiting_for_sources") head.push('<span class="pill">waiting for sources to finish</span>');
     if (m.status === "pending") head.push('<span class="pill">queued</span>');
     if (m.status === "streaming") head.push('<span class="pill">writing</span>');
+    if (m.skill) head.push(`<span class="pill skill-pill" title="${escapeAttr(m.skill.description)}">skill: ${escapeHtml(m.skill.title)}</span>`);
     if (m.strategy) head.push(`<span class="pill" title="${escapeAttr(STRATEGY_HINTS[m.strategy] || "")}">${STRATEGY_LABELS[m.strategy] || m.strategy}</span>`);
     const u = m.token_usage || {};
     if (u.prompt_tokens) {
@@ -66,7 +75,7 @@ export function initChat(store, els) {
     const artifacts = [...state.artifacts.values()].filter((a) => a.message_id === m.id);
     const body = m.content ? renderer.render(m.content) : "";
     el.innerHTML = `
-      <div class="message-head"><span>raida</span>${head.join("")}</div>
+      <div class="message-head"><span>Raida</span>${head.join("")}</div>
       <div class="message-body">${body}</div>
       ${progress && m.status !== "done" ? `<div class="message-progress">${escapeHtml(progress)}</div>` : ""}
       ${m.error ? `<div class="message-error">${escapeHtml(m.error)}</div>` : ""}

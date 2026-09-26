@@ -36,8 +36,10 @@ lint:
 fmt:
 	uv run ruff format . && uv run ruff check --fix .
 
+# Model prompt-reading and writing speed; MEDIA=<recording> also times transcription.
 bench:
-	$(MAC_LIBS) uv run python scripts/bench_llm.py && $(MAC_LIBS) uv run python scripts/bench_stt.py
+	$(MAC_LIBS) uv run python scripts/bench_llm.py
+	$(if $(MEDIA),$(MAC_LIBS) uv run python scripts/bench_stt.py "$(MEDIA)")
 
 fixtures:
 	uv run python tests/fixtures/make_fixtures.py

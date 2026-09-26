@@ -208,6 +208,10 @@ class Config(StrictModel):
         return self.paths.data_dir / "models"
 
     @property
+    def skills_dir(self) -> Path:
+        return self.paths.data_dir / "skills"
+
+    @property
     def db_path(self) -> Path:
         return self.paths.data_dir / "raida.sqlite3"
 
@@ -219,6 +223,7 @@ class Config(StrictModel):
             self.artifacts_dir,
             self.media_dir,
             self.models_dir,
+            self.skills_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)
 

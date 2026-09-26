@@ -1,5 +1,6 @@
 import { api } from "./api.js";
 import { initChat } from "./chat.js";
+import { initSkills } from "./skills.js";
 import { initSources } from "./sources.js";
 import { initStatus } from "./status.js";
 import { createStore } from "./store.js";
@@ -8,30 +9,95 @@ import { toast } from "./util.js";
 const $ = (id) => document.getElementById(id);
 const store = createStore();
 let eventSource = null;
+// The version of the UI files this page was loaded with; the server sends its own on connect.
+const UI_VERSION = document.querySelector('meta[name="raida-ui-version"]')?.content || "";
 
 const els = {
   dropzone: $("dropzone"), fileInput: $("file-input"), pickFiles: $("pick-files"), addByPath: $("add-by-path"),
   defaultLanguage: $("default-language"), uploadProgress: $("upload-progress"), sourceList: $("source-list"),
-  summary: $("sources-summary"), pathDialog: $("path-dialog"), pathForm: $("path-form"), pathInput: $("path-input"),
+  summary: $("sources-summary"), sessionSourcesEmpty: $("session-sources-empty"),
+  libraryList: $("library-list"), libraryFilter: $("library-filter"), librarySummary: $("library-summary"),
+  libraryEmpty: $("library-empty"), pathDialog: $("path-dialog"), pathForm: $("path-form"), pathInput: $("path-input"),
   pathCancel: $("path-cancel"), textDialog: $("text-dialog"), textDialogTitle: $("text-dialog-title"),
   textDialogBody: $("text-dialog-body"), textDialogMd: $("text-dialog-md"), textClose: $("text-close"),
-  addFromLibrary: $("add-from-library"), libraryDialog: $("library-dialog"), libraryForm: $("library-form"),
-  libraryList: $("library-list"), libraryCancel: $("library-cancel"), libraryEmpty: $("library-empty"),
   composer: $("composer"), instruction: $("instruction"), readyOnly: $("ready-only"), fullText: $("full-text"), send: $("send"),
   cancelRun: $("cancel-run"), messageList: $("message-list"), chatEmpty: $("chat-empty"),
   sessionSelect: $("session-select"), newSession: $("new-session"), renameSession: $("rename-session"),
   deleteSession: $("delete-session"), statusStrip: $("status-strip"),
+  tabs: [$("tab-sources"), $("tab-skills")], tabSourcesCount: $("tab-sources-count"), tabSkillsCount: $("tab-skills-count"),
+  skillMenu: $("skill-menu"), skillChip: $("skill-chip"), skillsList: $("skills-list"), skillsProblems: $("skills-problems"),
+  skillNew: $("skill-new"), skillImport: $("skill-import"),
+  skillImportFile: $("skill-import-file"), skillEditor: $("skill-editor"), skillForm: $("skill-form"),
+  skillFormTitle: $("skill-form-title"), skillFormNote: $("skill-form-note"),
+  skillFormError: $("skill-form-error"), skillCancel: $("skill-cancel"), skillFormSize: $("skill-form-size"),
 };
 
 initSources(store, els);
+// Before the chat: the @ menu's key handler must run ahead of the composer's.
+const skills = initSkills(store, els);
 initChat(store, els);
 initStatus(store, els.statusStrip);
+
+// -- sidebar tabs ------------------------------------------------------------------------
+
+function selectTab(tab, focus = false) {
+  for (const t of els.tabs) {
+    const on = t === tab;
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(t.getAttribute("aria-controls")).hidden = !on;
+  }
+  if (focus) tab.focus();
+  try { localStorage.setItem("raida.tab", tab.id); } catch (_) { /* storage unavailable */ }
+}
+els.tabs.forEach((tab, i) => {
+  tab.addEventListener("click", () => selectTab(tab));
+  tab.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    selectTab(els.tabs[(i + (e.key === "ArrowRight" ? 1 : els.tabs.length - 1)) % els.tabs.length], true);
+  });
+});
+try { const saved = $(localStorage.getItem("raida.tab") || ""); if (els.tabs.includes(saved)) selectTab(saved); } catch (_) { /* storage unavailable */ }
+
+// -- a tab left open while raida was updated ---------------------------------------------
+
+// EventSource reconnects by itself after a server restart; if the server now serves other UI
+// files, this page's code is out of date (it once kept asking for a session title long after
+// that step was removed). Reload, keeping what was typed; once per version, in case a proxy
+// or cache serves the old page again.
+function checkVersion(serverVersion) {
+  if (!UI_VERSION || !serverVersion || serverVersion === UI_VERSION) return;
+  if (els.skillEditor.open) {
+    // Reload when the editor closes, so an unsaved skill is not lost.
+    toast("raida was updated; the page reloads when you close this skill.");
+    els.skillEditor.addEventListener("close", () => checkVersion(serverVersion), { once: true });
+    return;
+  }
+  try {
+    if (sessionStorage.getItem("raida.reloadedFor") === serverVersion) {
+      toast("raida was updated, but this page is still the old one: reload it with Cmd+Shift+R.", true);
+      return;
+    }
+    sessionStorage.setItem("raida.reloadedFor", serverVersion);
+    sessionStorage.setItem("raida.draft", els.instruction.value);
+  } catch (_) { /* storage unavailable: reload anyway */ }
+  location.reload();
+}
+try {
+  const draft = sessionStorage.getItem("raida.draft");
+  if (draft) { els.instruction.value = draft; els.instruction.dispatchEvent(new Event("input")); }
+  sessionStorage.removeItem("raida.draft");
+} catch (_) { /* storage unavailable */ }
+
+// -- sessions ----------------------------------------------------------------------------
 
 function connect(sessionId) {
   if (eventSource) eventSource.close();
   eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
   eventSource.addEventListener("snapshot", (e) => store.loadSnapshot(JSON.parse(e.data)));
-  for (const type of ["source.updated", "source.removed", "job.progress", "message.updated", "message.delta", "message.progress", "artifact.created", "session.updated", "system.status"]) {
+  eventSource.addEventListener("app.version", (e) => checkVersion(JSON.parse(e.data).ui));
+  for (const type of ["source.updated", "source.removed", "session.sources", "job.progress", "message.updated", "message.delta", "message.progress", "artifact.created", "session.updated", "system.status", "skills.updated"]) {
     eventSource.addEventListener(type, (e) => store.apply(type, JSON.parse(e.data)));
   }
   eventSource.onerror = () => { /* EventSource reconnects on its own; the snapshot resyncs state. */ };
@@ -39,7 +105,7 @@ function connect(sessionId) {
 
 async function selectSession(id) {
   store.state.sessionId = id;
-  localStorage.setItem("raida.session", id);
+  try { localStorage.setItem("raida.session", id); } catch (_) { /* storage unavailable */ }
   els.sessionSelect.value = id;
   connect(id);
 }
@@ -61,10 +127,13 @@ async function refreshSessions() {
 
 els.sessionSelect.addEventListener("change", () => selectSession(els.sessionSelect.value));
 els.newSession.addEventListener("click", async () => {
-  // Sessions are named automatically after their first answer; Rename is there for later.
-  const s = await api.createSession();
-  await refreshSessions();
-  await selectSession(s.id);
+  // No title to confirm: the session is named after its first answer; Rename is there for later.
+  try {
+    const s = await api.createSession();
+    await refreshSessions();
+    await selectSession(s.id);
+    els.instruction.focus();
+  } catch (err) { toast(err.message, true); }
 });
 els.renameSession.addEventListener("click", async () => {
   const current = store.state.session?.title || "";
@@ -75,9 +144,9 @@ els.renameSession.addEventListener("click", async () => {
 });
 els.deleteSession.addEventListener("click", async () => {
   if (!store.state.sessionId) return;
-  if (!confirm("Delete this session, its sources and its answers?")) return;
+  if (!confirm("Delete this session and its answers? Its files stay in the library for other sessions.")) return;
   await api.deleteSession(store.state.sessionId);
-  localStorage.removeItem("raida.session");
+  try { localStorage.removeItem("raida.session"); } catch (_) { /* storage unavailable */ }
   await boot();
 });
 store.subscribe((state) => {
@@ -90,13 +159,15 @@ store.subscribe((state) => {
 async function boot() {
   try {
     await refreshSessions();
-    let id = localStorage.getItem("raida.session");
+    let id = null;
+    try { id = localStorage.getItem("raida.session"); } catch (_) { /* storage unavailable */ }
     if (!id || !store.state.sessions.some((s) => s.id === id)) {
       id = store.state.sessions[0]?.id || (await api.createSession()).id;
       await refreshSessions();
     }
     await selectSession(id);
     api.health().then((h) => store.apply("system.status", h)).catch(() => {});
+    skills.refresh();
   } catch (err) {
     toast(`Could not reach the raida server: ${err.message}`, true);
   }

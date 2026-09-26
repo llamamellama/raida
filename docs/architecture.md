@@ -15,24 +15,36 @@ is added, and each session's prompt prefix is read before the question arrives.
 | --- | --- |
 | `raida.config` | TOML + environment configuration, fail-fast validation, derived paths |
 | `raida.db` | SQLite schema and repository (sync, called via `asyncio.to_thread`) |
-| `raida.api` | routes for sessions, sources, messages, exports, health; SSE stream |
+| `raida.api` | routes for sessions, the source library, messages, exports, skills, health; SSE stream |
 | `raida.pipeline.scheduler` | per-source pipelines, per-message synthesis, resource limits, events |
 | `raida.pipeline.stages` | text, pdf (+ OCR), media (ffmpeg), docx, subtitles |
 | `raida.transcribe` | `Transcriber` protocol; Parakeet (MLX), Whisper (MLX), Apple engine, fake; OpenCC script normalization |
 | `raida.llm` | `LlmBackend` protocol; llama-server, Ollama, OpenAI-compatible, fake; notes, retrieval, priority gate, prompts, chunking, synthesis |
+| `raida.skills` | skills: Agent Skills folders (SKILL.md) built in and in `<data_dir>/skills`, import/export, `@name` parsing and rendering |
+| `raida.script` | Chinese script detection and OpenCC conversion for transcripts, notes, answers and titles |
 | `raida.export` | Markdown to txt / html / pdf (WeasyPrint or fpdf2) / docx |
 | `raida.web` | vanilla JS UI with vendored `marked` and `DOMPurify` |
 | `raida.doctor` | environment checks shared by the CLI and `/api/health` |
 
 ## Data model
 
-- Session: workspace with sources, messages and artifacts.
-- Source: one file. `kind` (text, pdf, audio, video, docx, subtitles), `sha256`, `language`
-  (`auto` or a code), `status`, `progress`, `processed_path`, `token_estimate`, `meta`.
+- Session: a conversation over the library files it uses, with its messages and artifacts.
+- Source: one file in the library, shared by every session (ADR-0007). `kind` (text, pdf,
+  audio, video, docx, subtitles), `sha256` (unique: one entry per content), `original_name`
+  (the file's name) and `title` (the name shown and given to the model, which cites sources by
+  it; the user can change it, and it falls back to the file's name when cleared), `language`
+  (`auto` or a code), `status`, `progress`, `processed_path`, `token_estimate`, `meta`. A session uses
+  a source through a `session_sources` row (session, source, `added_at`); reads add `sessions`
+  (how many use it) and `last_used_at`. Deleting a session leaves its sources in the library.
 - Job: one stage run for a source (stage, resource class, state, timing, error).
 - Message: user instruction or assistant answer. Assistant messages carry `status`
   (pending, waiting_for_sources, streaming, done, failed, cancelled), `strategy`
-  (single_shot, map_reduce) and token usage.
+  (single_shot, notes, map_reduce), `full_text` and token usage. Both messages of a skill run
+  carry `skill` (name, title, description, arguments, the filled-in instructions, options,
+  revision hash); the user message also carries `prompt`, the full instruction sent.
+- Skill: a folder, not a table row: `SKILL.md` plus optional `assets/example.md` and
+  `references/reference.md` (ADR-0006). Built-in ones ship in the package; a user folder with
+  the same name overrides one.
 - Artifact: an export of a message (format, path, filename).
 - ProcessedCache: content hash + kind + language + pipeline variant -> processed markdown.
 - Notes: overview plus anchored section notes of one processed document, keyed by processed
@@ -41,8 +53,8 @@ is added, and each session's prompt prefix is read before the question arrives.
   also holds finished note sections, so an interrupted note run resumes.
 
 Files live under the data directory: `uploads/<sha256>/<name>`, `media/<sha256>.wav`,
-`processed/<key>.md` + `.json`, `artifacts/<message>/<artifact>.<ext>`, `models/hf` (Hugging
-Face cache), `raida.sqlite3`.
+`processed/<key>.md` + `.json`, `artifacts/<message>/<artifact>.<ext>`, `skills/<name>/`,
+`models/hf` (Hugging Face cache), `raida.sqlite3`.
 
 ## Source pipeline
 
@@ -68,7 +80,13 @@ queued -> [extracting | transcoding -> detecting_language -> transcribing | rend
   is written from them. A failure (for example the model server is down) leaves the source
   ready without notes; answers then read it in full. At startup, ready sources without notes
   are noted one at a time.
-- Every result is stored once per content hash and reused across sessions.
+- A file is processed once, as its library entry, whatever the number of sessions using it.
+  Adding known content (upload, add by path, `raida process`) finds the entry: the file is ready
+  at once, or the session shares the run in progress and its questions wait for it; the new
+  upload's copy is discarded. Processed text is also cached by content, kind, language and
+  pipeline variant, so switching a file back to an earlier language is immediate.
+- Deleting a source from the library removes it from every session with its uploaded copy
+  (never a file added by path), decoded audio, processed text, notes and condensations.
 
 Resource classes (`raida.pipeline.resources`): a spawn-based `ProcessPoolExecutor` sized to the
 performance cores (max 6) for CPU stages; `asyncio.Semaphore(1)` for the GPU; the LLM gate
@@ -107,8 +125,25 @@ as `message.progress` ("Thinking (N tokens)").
 
 Reading ahead. With a backend that keeps a prompt cache (llama-server), the scheduler reads a
 session's prefix into the cache in the background (`max_tokens: 0`) when the session is opened,
-when its sources settle and after each answer, so the next question reads only itself. Usage on
-each answer reports `cached_tokens`.
+when its list of sources changes and settles, and after each answer, so the next question reads
+only itself. When a file finishes processing, only the sessions open in a tab are read; a file
+used by many sessions would otherwise queue a long read for each. Usage on each answer reports
+`cached_tokens`.
+
+Skills. `@name rest` at the start of an instruction runs a skill (ADR-0006): the scheduler
+renders it when the message is submitted (instructions with `$ARGUMENTS` filled, then the
+reference and the output example, each introduced for what it is) and stores the result on the
+message. The rendered text is the instruction of the final user turn, after the cached prefix.
+Passages are searched with what the user typed after the command, else the skill's
+instructions. The skill's language option picks the answer language (its instructions, the
+main language of the sources weighted by length, or a set language), its think option can turn
+reasoning off, and its full-text option takes the full-text path. In later history a skill run
+appears as its command and one line of description.
+
+When notes do not fit `llm.interactive_budget_tokens`, the oldest conversation turns are
+dropped before any source falls back to its overview. A question whose session is being read
+ahead waits for that read instead of cancelling it: cancelling made the question land on
+another server slot and re-read the whole prefix.
 
 A prompt submitted while sources are still processing waits (`waiting_for_sources`) and starts
 when the last source finishes, unless `run_with_ready_only` was set.
@@ -116,9 +151,24 @@ when the last source finishes, unless `run_with_ready_only` was set.
 ## API
 
 See the route modules for request and response models. Event types on
-`GET /api/sessions/{id}/events`: `snapshot` (full session state on connect), `system.status`,
-`source.updated`, `source.removed`, `job.progress`, `message.updated`, `message.delta`,
-`message.progress`, `artifact.created`, `session.updated`. Reconnects resync from the snapshot.
+`GET /api/sessions/{id}/events`: `snapshot` (the session, its sources, messages and artifacts,
+and the whole library, on connect), `app.version` (the hash of the UI files the server serves),
+`system.status`, `source.updated`, `source.removed` and `job.progress` (sent to every tab, since
+any session may list the file), `session.sources` (the ids of the session's sources, in order,
+when that list changes), `message.updated`, `message.delta`, `message.progress`,
+`artifact.created`, `session.updated`, and `skills.updated` (sent to every tab when a skill
+changes). Reconnects resync from the snapshot. Sources: `GET /api/library`; `POST
+/api/sessions/{id}/sources` (upload) and `.../sources/by-path` put files in the library and the
+session; `PUT` and `DELETE /api/sessions/{id}/sources/{source_id}` add a library file to a
+session or remove it; `GET /api/sources/{id}`, `/text`, `/notes`, `PATCH` (title, language), `/retry`,
+`/cancel`; `DELETE /api/sources/{id}` deletes from the library. Skills: `GET/POST /api/skills`,
+`GET/PUT/DELETE /api/skills/{name}`, `POST /api/skills/import`, `GET /api/skills/{name}/export`.
+The server reads the UI files once, when it starts, and serves only those: files edited on disk
+while it runs are served after a restart, together with the server code that matches them (a
+page once got newer scripts than its server and could not list the sessions). The page loads
+its scripts from `/static/<content hash>/`, so a browser never mixes modules of two versions,
+and carries that hash; a tab that reconnects to a server with other UI files reloads itself,
+keeping the text in the instruction box.
 
 ## Failure handling
 
@@ -131,10 +181,16 @@ visible warning so sources can still be processed. Logs are structured JSON on s
 
 Unit tests cover config, chunking, token estimation, transcript formatting, script
 normalization, retrieval, the priority gate, request shaping of each LLM backend (with a mock
-transport), PDF extraction and the OCR heuristic, and every exporter. Integration tests run the real app with the fake LLM and
-fake transcriber through httpx, including uploads of every kind, cache hits, add-by-path rules,
-waiting-for-sources, notes taken once and shared across sessions, answers from notes with
-retrieved passages, reading ahead, map-reduce, exports, and the SSE stream against a live
-uvicorn server.
+transport), the skill format, store, archive import, command parsing and rendering, how a skill
+picks its answer language, the fast-path planner, PDF extraction and the OCR heuristic, every
+exporter, and the schema upgrades (including per-session rows becoming one library). Integration
+tests run the real app with the fake LLM and fake transcriber through httpx, including uploads
+of every kind, the library (a file shared by sessions, processed once even when two sessions add
+it during its run, kept when its session is deleted, removed everywhere when deleted from the
+library), cache hits, add-by-path rules, waiting-for-sources, notes taken once and shared
+across sessions, answers from notes with retrieved passages, reading ahead (and a question
+waiting for its session's read-ahead), skills (managing, importing, exporting, running in
+several sessions, options, follow-ups, the CLI), map-reduce, exports, and the SSE stream against
+a live uvicorn server.
 Real-model smoke tests are a documented manual step on the Mac (`make bench` and the checklist
 in `docs/model-setup.md`).

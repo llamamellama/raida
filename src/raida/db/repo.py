@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from raida.models import (
+    SOURCE_COMPUTED_FIELDS,
     Artifact,
     Job,
-    LibraryEntry,
     Message,
     ProcessedCacheEntry,
     Session,
@@ -28,9 +28,21 @@ from raida.models import (
     utc_now,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 _JSON_FIELDS = {"meta", "token_usage"}
+_NULLABLE_JSON_FIELDS = {"skill"}
 _BOOL_FIELDS = {"managed", "run_with_ready_only", "title_auto", "full_text"}
+
+# A library source with how it is used, for every query that returns sources.
+_SOURCE_COLUMNS = (
+    "s.*, "
+    "(SELECT COUNT(*) FROM session_sources u WHERE u.source_id = s.id) AS sessions, "
+    "(SELECT MAX(u.added_at) FROM session_sources u WHERE u.source_id = s.id) AS last_used_at"
+)
+_LIBRARY_COLUMNS = (
+    "id, kind, original_name, stored_path, managed, sha256, size_bytes, language, status, "
+    "progress, error, processed_path, token_estimate, meta, created_at, updated_at"
+)
 
 
 class NotFoundError(LookupError):
@@ -41,6 +53,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     for key in _JSON_FIELDS & data.keys():
         data[key] = json.loads(data[key]) if data[key] else {}
+    for key in _NULLABLE_JSON_FIELDS & data.keys():
+        data[key] = json.loads(data[key]) if data[key] else None
     for key in _BOOL_FIELDS & data.keys():
         data[key] = bool(data[key])
     return data
@@ -102,7 +116,92 @@ class Database:
                         )
                     # Every statement is CREATE ... IF NOT EXISTS, so this adds only new tables.
                     self._conn.executescript(schema)
+                if current < 4:
+                    columns = {r[1] for r in self._conn.execute("PRAGMA table_info(messages)")}
+                    for column in ("skill", "prompt"):
+                        if column not in columns:
+                            self._conn.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
+                if current < 5:
+                    self._share_sources()
+                if current < 6:
+                    columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sources)")}
+                    if "title" not in columns:
+                        self._conn.execute(
+                            "ALTER TABLE sources ADD COLUMN title TEXT NOT NULL DEFAULT ''"
+                        )
+                    self._conn.execute("UPDATE sources SET title = original_name WHERE title = ''")
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _share_sources(self) -> None:
+        """v5 (ADR-0007): per-session source rows become one library row per file, and
+        session_sources records which sessions use it. Of several rows for one file the ready
+        one updated last carries the processing state; jobs follow it. The table is rebuilt the
+        way SQLite documents for changes ALTER TABLE cannot make: new table, copy, drop, rename,
+        with foreign keys off so the drop does not cascade."""
+        columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sources)")}
+        if "session_id" not in columns:
+            return
+        rows = [dict(r) for r in self._conn.execute("SELECT * FROM sources ORDER BY created_at")]
+        keep: dict[str, dict[str, Any]] = {}
+        first_added: dict[str, str] = {}
+        for row in rows:
+            sha = row["sha256"]
+            first_added.setdefault(sha, row["created_at"])
+            best = keep.get(sha)
+            rank = (row["status"] == "ready", row["updated_at"])
+            if best is None or rank > (best["status"] == "ready", best["updated_at"]):
+                keep[sha] = row
+        names = _LIBRARY_COLUMNS.split(", ")
+        library = [
+            [first_added[sha] if n == "created_at" else row[n] for n in names]
+            for sha, row in keep.items()
+        ]
+        uses = [(r["session_id"], keep[r["sha256"]]["id"], r["created_at"]) for r in rows]
+        moved = [(keep[r["sha256"]]["id"], r["id"]) for r in rows if keep[r["sha256"]] is not r]
+        self._conn.execute("PRAGMA foreign_keys = OFF")  # a no-op inside a transaction
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute(
+                "CREATE TABLE sources_v5 ("
+                "id TEXT PRIMARY KEY, kind TEXT NOT NULL, original_name TEXT NOT NULL, "
+                "stored_path TEXT NOT NULL, managed INTEGER NOT NULL DEFAULT 1, "
+                "sha256 TEXT NOT NULL UNIQUE, size_bytes INTEGER NOT NULL, "
+                "language TEXT NOT NULL DEFAULT 'auto', status TEXT NOT NULL, "
+                "progress REAL NOT NULL DEFAULT 0, error TEXT, processed_path TEXT, "
+                "token_estimate INTEGER, meta TEXT NOT NULL DEFAULT '{}', "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_sources ("
+                "session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, "
+                "source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE, "
+                "added_at TEXT NOT NULL, PRIMARY KEY (session_id, source_id))"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_sources_source "
+                "ON session_sources(source_id)"
+            )
+            marks = ", ".join("?" for _ in names)
+            self._conn.executemany(
+                f"INSERT INTO sources_v5 ({_LIBRARY_COLUMNS}) VALUES ({marks})", library
+            )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO session_sources (session_id, source_id, added_at) "
+                "VALUES (?, ?, ?)",
+                uses,
+            )
+            self._conn.executemany("UPDATE jobs SET source_id = ? WHERE source_id = ?", moved)
+            self._conn.execute("DROP TABLE sources")
+            self._conn.execute("ALTER TABLE sources_v5 RENAME TO sources")
+            problems = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+            if problems:
+                raise RuntimeError(f"sources migration left broken references: {problems[:5]}")
+            self._conn.execute("COMMIT")
+        except BaseException:
+            self._conn.execute("ROLLBACK")
+            raise
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
 
     # -- generic helpers -------------------------------------------------------------------
 
@@ -176,24 +275,87 @@ class Database:
         if self._execute("DELETE FROM sessions WHERE id = ?", (session_id,)) == 0:
             raise NotFoundError(f"session {session_id} not found")
 
-    # -- sources ---------------------------------------------------------------------------
+    # -- sources: the library, and the files each session uses -----------------------------
 
-    def create_source(self, source: Source) -> Source:
-        self._insert("sources", source.model_dump())
-        self.touch_session(source.session_id)
-        return source
+    def add_to_library(self, source: Source) -> tuple[Source, bool]:
+        """Add a file unless the library already has its content; returns the library entry and
+        whether it is new. One statement, so two uploads of one file cannot both insert."""
+        data = source.model_dump(exclude=set(SOURCE_COMPUTED_FIELDS))
+        cols = ", ".join(data)
+        marks = ", ".join("?" for _ in data)
+        with self._lock:
+            cur = self._conn.execute(
+                f"INSERT INTO sources ({cols}) VALUES ({marks}) ON CONFLICT(sha256) DO NOTHING",
+                [_encode(v) for v in data.values()],
+            )
+        entry = self.find_source(source.sha256)
+        if entry is None:  # pragma: no cover - the row was just inserted or already there
+            raise NotFoundError(f"source {source.sha256[:12]} not found")
+        return entry, bool(cur.rowcount)
 
     def get_source(self, source_id: str) -> Source:
-        row = self._fetchone("SELECT * FROM sources WHERE id = ?", (source_id,))
+        sql = f"SELECT {_SOURCE_COLUMNS} FROM sources s WHERE s.id = ?"
+        row = self._fetchone(sql, (source_id,))
         if row is None:
             raise NotFoundError(f"source {source_id} not found")
         return Source.model_validate(row)
 
+    def find_source(self, sha256: str) -> Source | None:
+        sql = f"SELECT {_SOURCE_COLUMNS} FROM sources s WHERE s.sha256 = ?"
+        row = self._fetchone(sql, (sha256,))
+        return Source.model_validate(row) if row else None
+
+    def list_library(self) -> list[Source]:
+        """Every file in the library, the most recently used first."""
+        rows = self._fetchall(f"SELECT {_SOURCE_COLUMNS} FROM sources s")
+        sources = [Source.model_validate(r) for r in rows]
+        sources.sort(key=lambda s: s.last_used_at or s.created_at, reverse=True)
+        return sources
+
     def list_sources(self, session_id: str) -> list[Source]:
+        """The library files a session uses, in the order they were added to it."""
         rows = self._fetchall(
-            "SELECT * FROM sources WHERE session_id = ? ORDER BY created_at", (session_id,)
+            f"SELECT {_SOURCE_COLUMNS} FROM session_sources ss JOIN sources s "
+            "ON s.id = ss.source_id WHERE ss.session_id = ? ORDER BY ss.added_at, s.created_at",
+            (session_id,),
         )
         return [Source.model_validate(r) for r in rows]
+
+    def session_source_ids(self, session_id: str) -> list[str]:
+        rows = self._fetchall(
+            "SELECT source_id FROM session_sources WHERE session_id = ? ORDER BY added_at",
+            (session_id,),
+        )
+        return [r["source_id"] for r in rows]
+
+    def sessions_using(self, source_id: str) -> list[str]:
+        rows = self._fetchall(
+            "SELECT session_id FROM session_sources WHERE source_id = ? ORDER BY added_at",
+            (source_id,),
+        )
+        return [r["session_id"] for r in rows]
+
+    def attach_source(self, session_id: str, source_id: str) -> bool:
+        """Use a library file in a session; False when the session already uses it."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO session_sources (session_id, source_id, added_at) "
+                "VALUES (?, ?, ?)",
+                (session_id, source_id, utc_now()),
+            )
+        if cur.rowcount:
+            self.touch_session(session_id)
+        return bool(cur.rowcount)
+
+    def detach_source(self, session_id: str, source_id: str) -> bool:
+        """Stop using a file in a session. The file stays in the library."""
+        removed = self._execute(
+            "DELETE FROM session_sources WHERE session_id = ? AND source_id = ?",
+            (session_id, source_id),
+        )
+        if removed:
+            self.touch_session(session_id)
+        return bool(removed)
 
     def update_source(self, source_id: str, **fields: Any) -> Source:
         fields["updated_at"] = utc_now()
@@ -202,51 +364,28 @@ class Database:
         return self.get_source(source_id)
 
     def delete_source(self, source_id: str) -> None:
+        """Remove a file from the library and from every session that uses it."""
         if self._execute("DELETE FROM sources WHERE id = ?", (source_id,)) == 0:
             raise NotFoundError(f"source {source_id} not found")
 
-    def list_library(self) -> list[LibraryEntry]:
-        """Every distinct file known to any session, newest use first: the shared library."""
-        rows = self._fetchall("SELECT * FROM sources ORDER BY created_at DESC")
-        by_sha: dict[str, LibraryEntry] = {}
-        for row in rows:
-            source = Source.model_validate(row)
-            entry = by_sha.get(source.sha256)
-            if entry is None:
-                by_sha[source.sha256] = LibraryEntry(
-                    sha256=source.sha256,
-                    source_id=source.id,
-                    original_name=source.original_name,
-                    kind=source.kind,
-                    size_bytes=source.size_bytes,
-                    language=source.language,
-                    managed=source.managed,
-                    stored_path=source.stored_path,
-                    status=source.status,
-                    token_estimate=source.token_estimate,
-                    notes_ready=(source.meta.get("notes") or {}).get("status") == "done",
-                    session_ids=[source.session_id],
-                    last_used_at=source.updated_at,
+    def forget_processed(self, sha256: str) -> list[str]:
+        """Drop the processed text, notes and condensations of a file; returns the processed
+        paths so the caller can delete the files."""
+        with self._lock:
+            paths = [
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT processed_path FROM processed_cache WHERE sha256 = ?", (sha256,)
                 )
-            elif source.session_id not in entry.session_ids:
-                entry.session_ids.append(source.session_id)
-        return list(by_sha.values())
-
-    def find_source_by_sha(self, session_id: str, sha256: str) -> Source | None:
-        row = self._fetchone(
-            "SELECT * FROM sources WHERE session_id = ? AND sha256 = ? ORDER BY created_at LIMIT 1",
-            (session_id, sha256),
-        )
-        return Source.model_validate(row) if row else None
-
-    def sources_referencing(self, sha256: str) -> int:
-        row = self._fetchone("SELECT COUNT(*) AS n FROM sources WHERE sha256 = ?", (sha256,))
-        return int(row["n"]) if row else 0
+            ]
+            for table in ("processed_cache", "notes", "condensations"):
+                self._conn.execute(f"DELETE FROM {table} WHERE sha256 = ?", (sha256,))
+        return paths
 
     def unfinished_sources(self) -> list[Source]:
         rows = self._fetchall(
-            "SELECT * FROM sources WHERE status NOT IN ('ready', 'failed', 'cancelled') "
-            "ORDER BY created_at"
+            f"SELECT {_SOURCE_COLUMNS} FROM sources s "
+            "WHERE s.status NOT IN ('ready', 'failed', 'cancelled') ORDER BY s.created_at"
         )
         return [Source.model_validate(r) for r in rows]
 
@@ -403,16 +542,10 @@ class Database:
                 ),
             )
 
-    def sources_with_processed_path(self, processed_path: str) -> list[Source]:
-        rows = self._fetchall(
-            "SELECT * FROM sources WHERE processed_path = ? ORDER BY created_at", (processed_path,)
-        )
-        return [Source.model_validate(r) for r in rows]
-
     def ready_sources(self) -> list[Source]:
         rows = self._fetchall(
-            "SELECT * FROM sources WHERE status = 'ready' AND processed_path IS NOT NULL "
-            "ORDER BY created_at"
+            f"SELECT {_SOURCE_COLUMNS} FROM sources s "
+            "WHERE s.status = 'ready' AND s.processed_path IS NOT NULL ORDER BY s.created_at"
         )
         return [Source.model_validate(r) for r in rows]
 

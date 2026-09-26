@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -40,11 +41,65 @@ async def test_health(client: httpx.AsyncClient) -> None:
 
 async def test_index_served(client: httpx.AsyncClient) -> None:
     r = await client.get("/")
-    assert r.status_code == 200 and "<title>raida</title>" in r.text
+    assert r.status_code == 200 and "<title>Raida</title>" in r.text
     assert r.headers["cache-control"] == "no-cache"
-    script = await client.get("/static/app.js")
+    # Assets load from a path that changes with their content, so an update is never mixed
+    # with modules a browser cached from an older version.
+    versioned = re.search(r'src="/static/([0-9a-f]{12})/app\.js"', r.text)
+    assert versioned is not None
+    # The page carries the same version, which it compares with the server's on reconnect.
+    assert f'<meta name="raida-ui-version" content="{versioned.group(1)}">' in r.text
+    script = await client.get(f"/static/{versioned.group(1)}/app.js")
     assert script.status_code == 200 and script.headers["cache-control"] == "no-cache"
+    assert (await client.get("/static/app.js")).status_code == 200
     assert (await client.get("/static/vendor/marked.umd.js")).status_code == 200
+
+
+def _copy_ui(target: Path) -> Path:
+    import shutil
+
+    from raida.api.app import web_root
+
+    shutil.copytree(web_root(), target, ignore=shutil.ignore_patterns("__pycache__"))
+    return target
+
+
+def _edit_ui(web: Path) -> None:
+    (web / "app.js").write_text("// edited while the server runs\n")
+    (web / "index.html").write_text("<p>edited</p>")
+
+
+async def test_ui_is_served_as_it_was_when_the_server_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running server once served scripts edited on disk under its older page; they looked
+    for elements the page did not have and stopped before listing any session. Edited files
+    are served after a restart, with the server code that matches them."""
+    from raida.api import app as app_module
+    from tests.conftest import make_config
+
+    web = _copy_ui(tmp_path / "web")
+    monkeypatch.setattr(app_module, "web_root", lambda: web)
+    app = app_module.create_app(make_config(tmp_path))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        page = (await client.get("/")).text
+        found = re.search(r'src="/static/([0-9a-f]{12})/app\.js"', page)
+        assert found is not None
+        version = found.group(1)
+        script = await client.get(f"/static/{version}/app.js")
+        assert script.headers["content-type"].startswith("text/javascript")
+        _edit_ui(web)
+        assert (await client.get(f"/static/{version}/app.js")).text == script.text
+        assert (await client.get("/static/app.js")).text == script.text
+        assert (await client.get("/")).text == page
+        again = await client.get(
+            f"/static/{version}/app.js", headers={"If-None-Match": f'"{version}"'}
+        )
+        assert again.status_code == 304
+        assert (await client.get("/static/missing.js")).status_code == 404
 
 
 async def test_parallel_ingest_all_kinds(client: httpx.AsyncClient) -> None:
@@ -82,44 +137,146 @@ async def test_regional_language_code_reaches_the_transcriber(client: httpx.Asyn
     assert done["meta"]["detected_language"] == "zh-TW"
 
 
+def _jobs(client: httpx.AsyncClient, source_id: str) -> list[str]:
+    return [j.stage for j in client.app.state.raida.db.list_jobs(source_id)]  # type: ignore[attr-defined]
+
+
+def _exists(path: str) -> bool:
+    return Path(path).exists()
+
+
+def _files_beside(path: str) -> list[str]:
+    return sorted(p.name for p in Path(path).parent.iterdir())
+
+
 async def test_library_shares_sources_across_sessions(client: httpx.AsyncClient) -> None:
     first = await _session(client)
     (src,) = await _upload(client, first, "notes.md", language="en")
     await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
 
     library = (await client.get("/api/library")).json()
-    entry = next(e for e in library if e["sha256"] == src["sha256"])
-    assert entry["original_name"] == "notes.md"
-    assert entry["session_ids"] == [first]
+    entry = next(e for e in library if e["id"] == src["id"])
+    assert entry["original_name"] == "notes.md" and entry["sessions"] == 1
 
+    # A new session starts with no sources; it can use any file in the library, which is
+    # ready at once because nothing is processed again.
     second = await _session(client)
-    r = await client.post(
-        f"/api/sessions/{second}/sources/from-library", json={"sha256s": [src["sha256"]]}
-    )
-    assert r.status_code == 201, r.text
-    (copy,) = r.json()
-    assert copy["session_id"] == second and copy["language"] == "en"
-    done = await wait_for(client, f"/api/sources/{copy['id']}", TERMINAL)
-    assert done["status"] == "ready" and done["meta"].get("cache_hit") is True
+    assert (await client.get(f"/api/sessions/{second}")).json()["sources"] == []
+    r = await client.put(f"/api/sessions/{second}/sources/{src['id']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == src["id"] and r.json()["status"] == "ready"
+    assert r.json()["sessions"] == 2 and r.json()["language"] == "en"
+    detail = (await client.get(f"/api/sessions/{second}")).json()
+    assert [s["id"] for s in detail["sources"]] == [src["id"]]
+    again = await client.put(f"/api/sessions/{second}/sources/{src['id']}")
+    assert again.status_code == 200 and again.json()["sessions"] == 2
 
-    # Adding the same file again to the same session returns the existing source.
-    again = await client.post(
-        f"/api/sessions/{second}/sources/from-library", json={"sha256s": [src["sha256"]]}
-    )
-    assert again.status_code == 201 and again.json()[0]["id"] == copy["id"]
-    library = (await client.get("/api/library")).json()
-    entry = next(e for e in library if e["sha256"] == src["sha256"])
-    assert sorted(entry["session_ids"]) == sorted([first, second])
+    # The same content uploaded in a third session, under another name, is the same file.
+    third = await _session(client)
+    files = [("files", ("copy.md", (FIXTURES / "notes.md").read_bytes()))]
+    (dup,) = (await client.post(f"/api/sessions/{third}/sources", files=files)).json()
+    assert dup["id"] == src["id"] and dup["original_name"] == "notes.md"
+    assert dup["status"] == "ready" and dup["sessions"] == 3
+    assert _jobs(client, src["id"]).count("extracting") == 1
+    assert _files_beside(src["stored_path"]) == ["notes.md"]
 
-    # Removing the copy leaves the original session's file in place.
-    assert (await client.delete(f"/api/sources/{copy['id']}")).status_code == 204
-    assert (await client.get(f"/api/sources/{src['id']}")).status_code == 200
+    # Removing it from one session leaves it in the library and in the others.
+    assert (await client.delete(f"/api/sessions/{second}/sources/{src['id']}")).status_code == 204
+    assert (await client.get(f"/api/sessions/{second}")).json()["sources"] == []
+    assert (await client.get(f"/api/sources/{src['id']}")).json()["sessions"] == 2
     assert (await client.get(f"/api/sources/{src['id']}/text")).status_code == 200
-
-    unknown = await client.post(
-        f"/api/sessions/{second}/sources/from-library", json={"sha256s": ["0" * 64]}
-    )
+    gone = await client.delete(f"/api/sessions/{second}/sources/{src['id']}")
+    assert gone.status_code == 404
+    unknown = await client.put(f"/api/sessions/{second}/sources/{'0' * 32}")
     assert unknown.status_code == 404
+
+
+async def test_renaming_a_source(client: httpx.AsyncClient) -> None:
+    """A file can be given another name, in every session. The model is given the new name,
+    so answers cite it; an empty name brings the file's own name back."""
+    first, second = await _session(client), await _session(client)
+    (src,) = await _upload(client, first, "notes.md")
+    await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    await client.put(f"/api/sessions/{second}/sources/{src['id']}")
+    assert src["title"] == "notes.md" == src["original_name"]
+    jobs_before = _jobs(client, src["id"])
+
+    r = await client.patch(f"/api/sources/{src['id']}", json={"title": "  Team\nnotes  2026 "})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "Team notes 2026" and r.json()["original_name"] == "notes.md"
+    for sid in (first, second):
+        (listed,) = (await client.get(f"/api/sessions/{sid}")).json()["sources"]
+        assert listed["title"] == "Team notes 2026"
+    assert (await client.get("/api/library")).json()[0]["title"] == "Team notes 2026"
+    assert _jobs(client, src["id"]) == jobs_before  # a name only: nothing processed again
+
+    m = (await client.post(f"/api/sessions/{second}/messages", json={"content": "Go"})).json()
+    done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+    assert "- Team notes 2026" in done["content"] and "notes.md" not in done["content"]
+
+    reset = await client.patch(f"/api/sources/{src['id']}", json={"title": ""})
+    assert reset.json()["title"] == "notes.md"
+    too_long = await client.patch(f"/api/sources/{src['id']}", json={"title": "x" * 201})
+    assert too_long.status_code == 422
+    assert (await client.patch(f"/api/sources/{src['id']}", json={})).status_code == 422
+    missing = await client.patch(f"/api/sources/{'0' * 32}", json={"title": "x"})
+    assert missing.status_code == 404
+
+
+async def test_a_file_in_two_sessions_is_processed_once(client: httpx.AsyncClient) -> None:
+    """A recording dropped into a second session while it is still being transcribed shares
+    that run, and a question there waits for it."""
+    scheduler = client.app.state.raida.scheduler  # type: ignore[attr-defined]
+    first, second = await _session(client), await _session(client)
+    await scheduler.resources.gpu.acquire()  # holds the transcription back
+    try:
+        (src,) = await _upload(client, first, "tone.wav", language="en")
+        (same,) = await _upload(client, second, "tone.wav", language="en")
+        assert same["id"] == src["id"] and same["status"] not in TERMINAL
+        m = (await client.post(f"/api/sessions/{second}/messages", json={"content": "Go"})).json()
+        await wait_for(client, f"/api/messages/{m['id']}", {"waiting_for_sources"})
+    finally:
+        scheduler.resources.gpu.release()
+    done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+    assert done["status"] == "done", done
+    assert "tone.wav" in done["content"]
+    assert _jobs(client, src["id"]).count("transcribing") == 1
+
+
+async def test_deleting_a_session_keeps_its_files(client: httpx.AsyncClient) -> None:
+    sid = await _session(client)
+    (src,) = await _upload(client, sid, "notes.md")
+    await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    assert (await client.delete(f"/api/sessions/{sid}")).status_code == 204
+    kept = (await client.get(f"/api/sources/{src['id']}")).json()
+    assert kept["status"] == "ready" and kept["sessions"] == 0
+    assert _exists(src["stored_path"])
+    assert src["id"] in {s["id"] for s in (await client.get("/api/library")).json()}
+    other = await _session(client)
+    used = await client.put(f"/api/sessions/{other}/sources/{src['id']}")
+    assert used.json()["status"] == "ready"
+
+
+async def test_deleting_from_the_library_removes_the_file_everywhere(
+    client: httpx.AsyncClient,
+) -> None:
+    a, b = await _session(client), await _session(client)
+    (src,) = await _upload(client, a, "notes.md")
+    ready = await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    await client.put(f"/api/sessions/{b}/sources/{src['id']}")
+    assert _exists(ready["processed_path"])
+
+    assert (await client.delete(f"/api/sources/{src['id']}")).status_code == 204
+    for sid in (a, b):
+        assert (await client.get(f"/api/sessions/{sid}")).json()["sources"] == []
+    assert (await client.get(f"/api/sources/{src['id']}")).status_code == 404
+    assert not _exists(src["stored_path"]) and not _exists(ready["processed_path"])
+    assert (await client.get("/api/library")).json() == []
+
+    # Added again, it is processed from the start: nothing of it was kept.
+    (again,) = await _upload(client, a, "notes.md")
+    done = await wait_for(client, f"/api/sources/{again['id']}", TERMINAL)
+    assert done["status"] == "ready" and not done["meta"].get("cache_hit")
 
 
 async def test_session_named_automatically_after_first_answer(client: httpx.AsyncClient) -> None:
@@ -145,14 +302,27 @@ async def test_session_named_automatically_after_first_answer(client: httpx.Asyn
     assert named["title"] == "Chosen" and named["title_auto"] is False
 
 
-async def test_cache_hit_on_same_file(client: httpx.AsyncClient) -> None:
+async def test_same_file_twice_in_a_session_is_one_source(client: httpx.AsyncClient) -> None:
     sid = await _session(client)
     first = (await _upload(client, sid, "notes.md"))[0]
     await wait_for(client, f"/api/sources/{first['id']}", TERMINAL)
     second = (await _upload(client, sid, "notes.md"))[0]
-    done = await wait_for(client, f"/api/sources/{second['id']}", TERMINAL)
-    assert done["status"] == "ready" and done["meta"].get("cache_hit") is True
-    assert done["sha256"] == first["sha256"]
+    assert second["id"] == first["id"] and second["status"] == "ready"
+    assert len((await client.get(f"/api/sessions/{sid}")).json()["sources"]) == 1
+
+
+async def test_cache_hit_when_switching_back_to_a_language(client: httpx.AsyncClient) -> None:
+    """Processed text is cached per content and language: going back to a language used
+    before is not transcribed again."""
+    sid = await _session(client)
+    (src,) = await _upload(client, sid, "tone.wav", language="en")
+    await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    for language in ("fr", "en"):
+        await client.patch(f"/api/sources/{src['id']}", json={"language": language})
+        done = await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+        assert done["status"] == "ready" and done["language"] == language
+    assert done["meta"].get("cache_hit") is True
+    assert _jobs(client, src["id"]).count("transcribing") == 2
 
 
 async def test_scanned_pdf_without_ocr(client: httpx.AsyncClient) -> None:
@@ -180,8 +350,9 @@ async def test_add_by_path_and_remove(client: httpx.AsyncClient) -> None:
     src = r.json()[0]
     assert src["managed"] is False
     await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+    # Deleted from the library: raida's text goes, the user's own file stays where it is.
     assert (await client.delete(f"/api/sources/{src['id']}")).status_code == 204
-    assert (FIXTURES / "notes.md").exists()  # never deletes files referenced in place
+    assert (FIXTURES / "notes.md").exists()
     bad = await client.post(f"/api/sessions/{sid}/sources/by-path", json={"paths": ["/etc/hosts"]})
     assert bad.status_code == 400
 
@@ -285,8 +456,12 @@ async def test_sse_snapshot_and_events(live_server: str) -> None:
         await asyncio.wait_for(task, timeout=30)
     types = [t for t, _ in received]
     assert types[0] == "snapshot"
+    assert received[0][1]["library"] == [] and received[0][1]["sources"] == []
+    assert types[1] == "app.version" and re.fullmatch(r"[0-9a-f]{12}", received[1][1]["ui"])
     assert "source.updated" in types and "message.delta" in types
     assert any(t == "source.updated" and d["status"] == "ready" for t, d in received)
+    listed = next(d for t, d in received if t == "session.sources")
+    assert listed["session_id"] == sid and len(listed["source_ids"]) == 1
 
 
 async def test_cancel_message_and_delete_session(client: httpx.AsyncClient) -> None:
@@ -343,14 +518,11 @@ async def test_long_source_is_noted_once_and_answered_from_notes(tmp_path: Path)
         # A second session reuses the processed text and the notes: no new note calls.
         calls_before = len(fake.calls)
         sid2 = await _session(client)
-        added = await client.post(
-            f"/api/sessions/{sid2}/sources/from-library", json={"sha256s": [src["sha256"]]}
-        )
-        again = await wait_for(client, f"/api/sources/{added.json()[0]['id']}", TERMINAL)
-        assert again["meta"]["notes"]["status"] == "done"
+        added = (await client.put(f"/api/sessions/{sid2}/sources/{src['id']}")).json()
+        assert added["status"] == "ready" and added["meta"]["notes"]["status"] == "done"
         assert len(fake.calls) == calls_before
 
-        # The session was read into the prompt cache once its sources settled.
+        # The session was read into the prompt cache as soon as it had the file.
         for _ in range(100):
             if fake.prefills:
                 break
@@ -436,3 +608,34 @@ async def test_english_instruction_over_english_sources_is_left_as_written(
     m = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Summarize"})).json()
     done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
     assert "我们的内容" in done["content"]  # no Chinese script to follow: unchanged
+
+
+async def test_a_question_waits_for_its_sessions_read_ahead(tmp_path: Path) -> None:
+    """Cancelling the read-ahead of the very prefix a question needs made the question start
+    over on another server slot; the question lets it finish instead."""
+    from raida.api.app import create_app
+
+    app = create_app(_notes_config(tmp_path))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        scheduler = app.state.raida.scheduler
+        fake = scheduler.llm
+        sid = await _session(client)
+        r = await client.post(
+            f"/api/sessions/{sid}/sources", files=[("files", ("talk.md", _long_transcript()))]
+        )
+        await wait_for(client, f"/api/sources/{r.json()[0]['id']}", TERMINAL)
+        # No tab has the session open, so the finished file did not start a read-ahead.
+        await asyncio.sleep(0.1)
+        assert fake.prefills_done == 0
+        done_before = fake.prefills_done
+        fake.prefill_delay_s = 0.5
+        scheduler.schedule_prepare(sid)  # as when the session is opened
+        await asyncio.sleep(0.05)
+        m = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Go"})).json()
+        done = await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+        assert done["status"] == "done", done
+        assert fake.prefills_done == done_before + 1  # finished, not cancelled
+        assert scheduler.resources.llm.preemptions == 0
