@@ -10,6 +10,7 @@ model = "gpt-oss:120b"               # REQUIRED. Must already be pulled locally.
 synthesis_budget_tokens = 64000      # inputs above this use map-reduce
 output_reserve_tokens = 8192
 keep_alive = "1h"
+request_timeout_s = 3600             # the server is silent while it reads a long prompt; cover the slowest prefill
 temperature = 0.3
 suggest_titles = true                # name each session after its first answer
 # think = false                      # Ollama only: off for hybrid models (Qwen3 2504, Qwen3.5/3.6); "low" | "medium" | "high" for gpt-oss; leave unset for thinking-only tags

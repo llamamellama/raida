@@ -104,6 +104,7 @@ variable `RAIDA_<SECTION>__<KEY>`, for example `RAIDA_LLM__MODEL=gemma4:31b`.
 | `llm.model` | required | model name as the server knows it |
 | `llm.synthesis_budget_tokens` | `64000` | inputs above this are condensed first. Token estimates are script-aware: Chinese, Japanese and Korean count close to one token per character |
 | `llm.suggest_titles` | `true` | name a session after its first answer (one short extra model call) |
+| `llm.request_timeout_s` | `3600` | how long to wait for the model server. Ollama sends nothing until it has read the whole prompt; very long prompts take many minutes |
 | `llm.think` | unset | Ollama only: `false` turns off reasoning for hybrid models with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6); `"low"`, `"medium"` or `"high"` sets the effort for gpt-oss. Leave unset for thinking-only tags such as Qwen3 Thinking-2507, which otherwise leak reasoning into the answer |
 | `transcribe.backend` | `parakeet` | `parakeet`, `whisper`, `apple` (macOS 26+, needs `brew install yap`) |
 | `transcribe.allow_model_download` | `false` | set `true` only while fetching weights |

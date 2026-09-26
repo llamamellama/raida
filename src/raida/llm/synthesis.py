@@ -120,9 +120,17 @@ class Synthesizer:
                 f"for {room}. Raise llm.synthesis_budget_tokens (and check the model's context "
                 "length), or remove sources from this session."
             )
-        await progress("Writing")
+        # The server is silent until it has read the whole prompt; say so, with a size.
+        await progress(
+            f"Reading about {prompt_tokens:,} tokens of sources and instruction; long inputs "
+            "take minutes before the first words appear"
+        )
+        first = True
         async with self.llm_slot:
             async for delta in self.llm.stream_chat(messages, self._options(), usage):
+                if first:
+                    first = False
+                    await progress("Writing")
                 await emit(delta)
         return SynthesisResult(
             strategy=strategy,

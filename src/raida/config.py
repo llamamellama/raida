@@ -52,7 +52,9 @@ class LlmConfig(StrictModel):
     map_chunk_tokens: int = Field(default=24_000, ge=2_000)
     history_budget_tokens: int = Field(default=6_000, ge=0)
     keep_alive: str = "1h"
-    request_timeout_s: float = Field(default=900.0, gt=0)
+    # Ollama sends nothing until the prompt is read; 100k tokens of Chinese took over 15 minutes
+    # on an M2 Max, so the read timeout must cover the whole prefill of the largest prompt.
+    request_timeout_s: float = Field(default=3600.0, gt=0)
     chars_per_token: float = Field(default=3.7, gt=1.0)
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     # Ollama only. Reasoning models stream their reasoning in a separate field that raida does

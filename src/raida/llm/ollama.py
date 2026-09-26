@@ -82,8 +82,15 @@ class OllamaBackend:
                                 if k in chunk
                             }
                         break
+        except httpx.TimeoutException as exc:
+            raise LlmError(
+                f"Ollama did not answer within llm.request_timeout_s = "
+                f"{self.config.request_timeout_s:g} s. The server is silent while it reads the "
+                "prompt, and a very long prompt can take many minutes; raise the timeout or "
+                "reduce the sources."
+            ) from exc
         except httpx.HTTPError as exc:
-            raise LlmError(f"Ollama request failed: {exc}") from exc
+            raise LlmError(f"Ollama request failed: {type(exc).__name__}: {exc}") from exc
 
     async def complete(self, messages: list[ChatMessage], options: GenerationOptions) -> str:
         parts = [delta async for delta in self.stream_chat(messages, options)]

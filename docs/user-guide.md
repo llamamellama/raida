@@ -187,6 +187,7 @@ Options, in order of preference:
 | Chinese transcript comes out in the wrong script | Pick "Chinese (Traditional)" for Traditional characters, "Chinese (Simplified)" for Simplified, or "Cantonese (Hong Kong)". Changing the language on a source re-transcribes it |
 | The answer starts after a long pause | The model is reasoning first. Wait, or set `llm.think = false` for a model that supports it |
 | The answer is cut off | Raise `llm.output_reserve_tokens` in `raida.toml` (16384 is generous) |
+| The run fails with "did not answer within llm.request_timeout_s" | The model was still reading a very long prompt when raida stopped waiting. Raise `llm.request_timeout_s` in `raida.toml`, or use fewer or shorter sources per question. The status under the answer shows how many tokens are being read |
 | The answer claims the sources say nothing relevant, and its "in" count is tiny | The prompt did not fit the model's context. raida now measures Chinese, Japanese and Korean text correctly and refuses to send a prompt that would overflow; if you see the refusal, raise `llm.synthesis_budget_tokens` for a large-context model or lower it to let raida condense first |
 | Slow, and the strip shows less than 100% GPU | The model does not fit in GPU memory. Use a smaller model or raise the cap as described in `model-setup.md` |
 | PDF export looks plain | Install `pango` with Homebrew (`/opt/homebrew/bin/brew install pango`) and start with `make dev` |
