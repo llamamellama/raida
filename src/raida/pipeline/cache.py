@@ -10,7 +10,9 @@ from raida.config import Config
 from raida.db import Database
 from raida.models import ProcessedCacheEntry, ProcessedSource, utc_now
 
-PIPELINE_VERSION = "1"
+# Bump when a fix changes processed output for the same input; v2: the media stage
+# passes regional language codes (zh-TW) to the transcriber instead of the base language.
+PIPELINE_VERSION = "v2"
 
 
 def cache_key(sha256: str, kind: str, language: str, variant: str) -> str:
