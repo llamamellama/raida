@@ -71,6 +71,29 @@ APPLE_LOCALES: dict[str, str] = {
 }
 
 
+# Region-specific locales the Apple engine distinguishes (different scripts or vocabularies).
+# Keyed by the normalized language code as the UI and API pass it.
+APPLE_REGIONAL_LOCALES: dict[str, str] = {
+    "zh-tw": "zh-TW",  # Traditional Chinese, Taiwan
+    "zh-hk": "zh-HK",  # Cantonese, Hong Kong
+    "zh-cn": "zh-CN",
+    "pt-pt": "pt-PT",
+    "en-gb": "en-GB",
+    "es-mx": "es-MX",
+    "fr-ca": "fr-CA",
+}
+
+
+def apple_locale(code: str | None) -> str | None:
+    """Apple locale for a code: 'zh-TW' -> 'zh-TW', 'zh' -> 'zh-CN', None when unsupported."""
+    if not code or code.lower() == "auto":
+        return None
+    normalized = code.replace("_", "-").lower()
+    if normalized in APPLE_REGIONAL_LOCALES:
+        return APPLE_REGIONAL_LOCALES[normalized]
+    return APPLE_LOCALES.get(normalized.split("-")[0])
+
+
 def base_language(code: str | None) -> str | None:
     """'en-US' -> 'en'; 'auto' or empty -> None."""
     if not code or code.lower() == "auto":

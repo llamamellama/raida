@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from raida.transcribe.base import (
@@ -18,7 +19,12 @@ from raida.transcribe.base import (
     TranscriberError,
     Transcript,
 )
-from raida.transcribe.languages import APPLE_LOCALES, base_language
+from raida.transcribe.languages import apple_locale, base_language
+
+# yap occasionally exits with "Downloading required assets... CancellationError()" for a locale
+# whose assets are installed, typically while another yap process is running. A retry succeeds.
+YAP_ATTEMPTS = 3
+YAP_RETRY_DELAY_S = 2.0
 
 
 def apple_speech_available() -> bool:
@@ -31,12 +37,24 @@ def apple_speech_available() -> bool:
     return major >= 26
 
 
+def run_yap(cmd: list[str], attempts: int = YAP_ATTEMPTS) -> subprocess.CompletedProcess[str]:
+    """Run yap, retrying the transient asset-download cancellation."""
+    proc: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(1, attempts + 1):
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=False)
+        transient = proc.returncode != 0 and "CancellationError" in proc.stderr
+        if not transient or attempt == attempts:
+            return proc
+        time.sleep(YAP_RETRY_DELAY_S * attempt)
+    assert proc is not None
+    return proc
+
+
 class AppleSpeechTranscriber(Transcriber):
     name = "apple"
 
     def supports_language(self, language: str | None) -> bool:
-        base = base_language(language)
-        return base is not None and base in APPLE_LOCALES
+        return apple_locale(language) is not None
 
     def detect_language(self, wav_path: Path, seconds: int) -> str | None:
         return None
@@ -48,8 +66,8 @@ class AppleSpeechTranscriber(Transcriber):
         language: str | None,
         progress: ProgressCallback | None = None,
     ) -> Transcript:
-        base = base_language(language)
-        if base is None or base not in APPLE_LOCALES:
+        locale = apple_locale(language)
+        if locale is None:
             raise TranscriberError("Apple speech backend needs an explicit, supported language.")
         if not apple_speech_available():
             raise TranscriberError("Apple speech backend needs macOS 26+ and `brew install yap`.")
@@ -61,16 +79,25 @@ class AppleSpeechTranscriber(Transcriber):
                 "yap",
                 "transcribe",
                 "--locale",
-                APPLE_LOCALES[base],
+                locale,
                 "--srt",
                 "--output-file",
                 str(out),
                 str(wav_path),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, check=False)
+            proc = run_yap(cmd)
             if proc.returncode != 0 or not out.exists():
-                raise TranscriberError(f"yap failed: {proc.stderr.strip() or proc.returncode}")
+                detail = proc.stderr.strip() or str(proc.returncode)
+                if "CancellationError" in detail:
+                    detail += (
+                        f". The Apple engine has no recognition assets for {locale} on this Mac "
+                        "and could not download them; add the language under System Settings > "
+                        "Keyboard > Dictation, or pick an installed language."
+                    )
+                raise TranscriberError(f"yap failed: {detail}")
             segments: list[Segment] = read_subtitles(out)
         if progress:
             progress(1.0)
-        return Transcript(language=base, segments=segments, backend=self.name, model="apple-speech")
+        return Transcript(
+            language=base_language(language), segments=segments, backend=self.name, model=locale
+        )

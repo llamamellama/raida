@@ -149,8 +149,10 @@ Layout: `src/raida/api` (routes, SSE), `src/raida/pipeline` (scheduler, stages),
 - `yap` prints "Downloading required assets" and then `CancellationError`: the Apple engine has
   no recognition assets for that language on this Mac and could not fetch them. Add the language
   under System Settings > Keyboard > Dictation (which downloads them), or pick an installed one.
-  Note that "Chinese" maps to the `zh-CN` locale, so transcripts come out in Simplified
-  characters; ask for Traditional characters in the instruction if the answer should use them.
+  For Chinese, pick "Chinese (Traditional)" (`zh-TW`), "Chinese (Simplified)" (`zh-CN`) or
+  "Cantonese (Hong Kong)" (`zh-HK`): the Apple engine writes the script of the chosen locale.
+  A `CancellationError` while another transcription is running is transient; raida retries it
+  three times on its own.
 - Media with no speech (silence, music, a test tone) becomes a ready source with an empty
   transcript, not a failure.
 - A folder literally named `~` appeared next to the app: an earlier build did not expand the

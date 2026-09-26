@@ -3,7 +3,8 @@ export const LANGUAGES = [
   ["it", "Italian"], ["pt", "Portuguese"], ["nl", "Dutch"], ["sv", "Swedish"], ["da", "Danish"],
   ["fi", "Finnish"], ["nb", "Norwegian"], ["pl", "Polish"], ["cs", "Czech"], ["ru", "Russian"],
   ["uk", "Ukrainian"], ["el", "Greek"], ["hu", "Hungarian"], ["ro", "Romanian"], ["tr", "Turkish"],
-  ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese"], ["ar", "Arabic"], ["hi", "Hindi"],
+  ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese (Simplified)"],
+  ["zh-TW", "Chinese (Traditional)"], ["zh-HK", "Cantonese (Hong Kong)"], ["ar", "Arabic"], ["hi", "Hindi"],
   ["he", "Hebrew"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["th", "Thai"],
 ];
 
