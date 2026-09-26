@@ -183,11 +183,17 @@ class Scheduler:
     async def _run_source(self, source_id: str) -> None:
         source = await asyncio.to_thread(self.db.get_source, source_id)
         started = utc_now()
-        log.info(
-            "source_start",
-            extra={"source_id": source.id, "kind": source.kind, "name": source.original_name},
-        )
         try:
+            # Inside the try so that any unexpected error marks the source failed instead of
+            # leaving it queued forever. "name" is reserved by logging.LogRecord.
+            log.info(
+                "source_start",
+                extra={
+                    "source_id": source.id,
+                    "kind": source.kind,
+                    "source_name": source.original_name,
+                },
+            )
             doc, variant = await self._process(source)
             key = cache.cache_key(source.sha256, source.kind, source.language, variant)
             md_path = await asyncio.to_thread(

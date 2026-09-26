@@ -11,13 +11,15 @@ synthesis_budget_tokens = 64000      # inputs above this use map-reduce
 output_reserve_tokens = 8192
 keep_alive = "1h"
 temperature = 0.3
+# think = false                      # Ollama only: off for hybrid models (Qwen3 2504, Qwen3.5/3.6); "low" | "medium" | "high" for gpt-oss; leave unset for thinking-only tags
 
 [transcribe]
 backend = "parakeet"                 # "parakeet" | "whisper" | "apple" | "fake"
-parakeet_model = "nvidia/parakeet-tdt-0.6b-v3"
+parakeet_model = "mlx-community/parakeet-tdt-0.6b-v3"
 whisper_model = "mlx-community/whisper-large-v3-mlx"
 language_detection = true
 allow_model_download = false         # set true once, online, to fetch weights; then back to false
+# ffmpeg_path = "/opt/homebrew/bin/ffmpeg"   # when the first ffmpeg on PATH is not the one you want
 
 [ocr]
 enabled = true

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from raida.transcribe.base import Segment
 from raida.transcribe.format import coalesce_segments, format_timestamp, transcript_markdown
 
@@ -19,3 +21,14 @@ def test_coalesce_into_paragraphs() -> None:
 
 def test_empty_segments_skipped() -> None:
     assert transcript_markdown([Segment(start=0, end=1, text="   ")], 30) == ""
+
+
+def test_read_subtitles_treats_empty_file_as_empty_transcript(tmp_path: Path) -> None:
+    from raida.pipeline.stages.subtitles import read_subtitles
+
+    empty = tmp_path / "silence.srt"
+    empty.write_bytes(b"")
+    assert read_subtitles(empty) == []
+    blank = tmp_path / "blank.vtt"
+    blank.write_text("\n\n", encoding="utf-8")
+    assert read_subtitles(blank) == []

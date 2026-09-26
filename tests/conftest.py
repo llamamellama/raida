@@ -13,6 +13,13 @@ from raida.config import Config, load_config
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_local_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """load_config reads ./raida.toml when no path is given; a developer's local config must
+    not leak into tests, so every test runs in an empty working directory."""
+    monkeypatch.chdir(tmp_path)
+
+
 def make_config(tmp_path: Path, **overrides: str) -> Config:
     env = {
         "RAIDA_LLM__MODEL": "fake-model",
@@ -22,7 +29,9 @@ def make_config(tmp_path: Path, **overrides: str) -> Config:
         "RAIDA_PATHS__ALLOWED_ROOTS": f'["{FIXTURES}"]',
         "RAIDA_OCR__ENABLED": "false",
         "RAIDA_WORKERS__CPU": "2",
-        "RAIDA_LOG_LEVEL": "WARNING",
+        # INFO is the production default; running tests at WARNING once hid a logging call
+        # that crashed every source pipeline.
+        "RAIDA_LOG_LEVEL": "INFO",
         **overrides,
     }
     clean = {k: v for k, v in os.environ.items() if not k.startswith("RAIDA_")}

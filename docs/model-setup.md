@@ -33,6 +33,24 @@ above that. The server is asked for `num_ctx = budget + output reserve + overhea
 default). Raise the budget only after `make bench` shows acceptable prefill time at that size
 and you have checked answer quality on a real long input.
 
+### Reasoning output
+
+Qwen3 and gpt-oss reason before they answer. Ollama streams that reasoning in a separate
+`thinking` field, which raida ignores, so it only delays the first visible token and counts
+against `num_predict` (measured on this project's M2 Max with `qwen3:30b-a3b`: a one-word
+answer spent a 64-token budget entirely on reasoning). Two knobs:
+
+- `llm.think = false` turns reasoning off for hybrid models that have a non-thinking mode
+  (the original Qwen3 2504 tags, Qwen3.5/3.6). Thinking-only tags ignore it: Ollama then skips
+  its parser while the model's template still opens a `<think>` block, so the reasoning and a
+  stray `</think>` end up in the answer. Ollama's current `qwen3:30b-a3b` is such a tag (the
+  weights identify as "Qwen3 30B A3B Thinking 2507"); leave `think` unset for it.
+- `llm.think = "low" | "medium" | "high"` sets the effort for gpt-oss, which cannot switch
+  reasoning off.
+
+With reasoning on, raise `llm.output_reserve_tokens` (16384 is comfortable) so a long think
+cannot truncate the visible answer; `num_ctx` grows by the same amount.
+
 ### Ollama settings
 
 The setup script and Makefile launch Ollama with:
@@ -42,10 +60,10 @@ OLLAMA_NUM_PARALLEL=1        # memory scales with parallel requests x context
 OLLAMA_KEEP_ALIVE=1h         # keep the model loaded between prompts
 OLLAMA_FLASH_ATTENTION=1
 OLLAMA_KV_CACHE_TYPE=q8_0    # halves KV memory with negligible quality loss
+OLLAMA_NO_CLOUD=1            # a mistyped model name can never turn into a network call
 ```
 
-Disable Ollama's cloud features (see the "How do I disable Ollama Cloud features?" entry in the
-Ollama FAQ) so a mistyped model name can never turn into a network call.
+`make ollama` starts a foreground server with exactly these variables.
 
 ### GPU memory cap
 
@@ -78,7 +96,14 @@ and the health strip in the UI report both values.
 
 Ollama stores models under `~/.ollama/models` as content-addressed blobs plus manifests. Pull
 once on a networked machine, copy that directory to the offline machine (or point
-`OLLAMA_MODELS` at a copy), and Ollama serves them without any network access.
+`OLLAMA_MODELS` at a copy), and Ollama serves them without any network access. Transcription
+weights live in `<data_dir>/models/hf/hub` and copy the same way.
+
+Downloads need `ollama.com` and `registry.ollama.ai` for Ollama, and `huggingface.co`,
+`cdn-lfs.hf.co` and `*.xethub.hf.co` for Hugging Face. Corporate web filters commonly block
+all of these while leaving PyPI and GitHub open; the symptom is a connection reset during the
+TLS handshake (`curl: (35) ... Socket is not connected`). Request an exception for those
+hosts or use the copy route above.
 
 ### Using llama-server instead
 
@@ -97,7 +122,7 @@ Backends (`transcribe.backend`):
 
 | Backend | Model | Languages | Notes |
 | --- | --- | --- | --- |
-| `parakeet` (default) | `nvidia/parakeet-tdt-0.6b-v3` via parakeet-mlx | 25 European, automatic ID | Best accuracy per second on long-form English; word timestamps; does not hallucinate into silence. CC-BY-4.0. |
+| `parakeet` (default) | `mlx-community/parakeet-tdt-0.6b-v3` via parakeet-mlx (MLX conversion of NVIDIA's weights: the library loads `config.json` and `model.safetensors`, which the `nvidia/` repo does not publish) | 25 European, automatic ID | Best accuracy per second on long-form English; word timestamps; does not hallucinate into silence. CC-BY-4.0. |
 | `whisper` | `mlx-community/whisper-large-v3-mlx` via mlx-whisper | 99 | Fallback for other languages and the language detector. MIT. |
 | `apple` | Apple SpeechAnalyzer via `yap` | ~30 locales | macOS 26+, `brew install yap`. Fastest, no download, needs an explicit language. |
 | `fake` | none | any | Tests and UI development. |

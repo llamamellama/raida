@@ -29,9 +29,11 @@ class ConfigError(RuntimeError):
 
 
 def default_data_dir() -> Path:
+    # Expanded here as well as in the field validator: pydantic does not validate defaults,
+    # so a bare "~" would become a directory literally named "~" in the working directory.
     if platform.system() == "Darwin":
-        return Path("~/Library/Application Support/raida")
-    return Path("~/.local/share/raida")
+        return Path("~/Library/Application Support/raida").expanduser()
+    return Path("~/.local/share/raida").expanduser()
 
 
 class StrictModel(BaseModel):
@@ -53,6 +55,12 @@ class LlmConfig(StrictModel):
     request_timeout_s: float = Field(default=900.0, gt=0)
     chars_per_token: float = Field(default=3.7, gt=1.0)
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    # Ollama only. Reasoning models stream their reasoning in a separate field that raida does
+    # not show, so it only costs time and output budget. False turns it off for hybrid models
+    # with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6); "low" | "medium" | "high" sets
+    # the effort for gpt-oss. Thinking-only tags (Qwen3 Thinking-2507) ignore False and then
+    # leak their reasoning into the answer, so leave it None for them (server default).
+    think: bool | Literal["low", "medium", "high"] | None = None
     suggest_titles: bool = False
 
     @property
@@ -64,7 +72,9 @@ class LlmConfig(StrictModel):
 
 class TranscribeConfig(StrictModel):
     backend: Literal["parakeet", "whisper", "apple", "fake"] = "parakeet"
-    parakeet_model: str = "nvidia/parakeet-tdt-0.6b-v3"
+    # parakeet-mlx reads config.json + model.safetensors; the mlx-community repo has them,
+    # the nvidia/ repo ships a .nemo archive instead.
+    parakeet_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
     whisper_model: str = "mlx-community/whisper-large-v3-mlx"
     language_detection: bool = True
     detection_seconds: int = Field(default=30, ge=5, le=120)

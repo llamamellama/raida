@@ -76,6 +76,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Run tests at the production log level so every INFO log call is exercised.
+log_level = "INFO"
 markers = [
   "mac_models: needs real MLX models and a running Ollama on a Mac (set RAIDA_REAL_MODELS=1)",
 ]

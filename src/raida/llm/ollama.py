@@ -39,7 +39,7 @@ class OllamaBackend:
     def _payload(
         self, messages: list[ChatMessage], options: GenerationOptions, stream: bool
     ) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": stream,
@@ -50,6 +50,9 @@ class OllamaBackend:
                 "temperature": options.temperature,
             },
         }
+        if self.config.think is not None:
+            payload["think"] = self.config.think
+        return payload
 
     async def stream_chat(
         self, messages: list[ChatMessage], options: GenerationOptions, usage: Usage | None = None

@@ -18,6 +18,10 @@ def _to_seconds(stamp: str) -> float:
 def read_subtitles(path: Path) -> list[Segment]:
     import webvtt
 
+    # Transcribers write an empty file for media without speech; that is an empty transcript,
+    # not a malformed one.
+    if path.stat().st_size == 0 or not path.read_text("utf-8", errors="replace").strip():
+        return []
     if path.suffix.lower() == ".srt":
         captions = webvtt.from_srt(str(path))
     else:

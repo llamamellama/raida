@@ -35,6 +35,22 @@ def test_toml_file_and_unknown_key_rejected(tmp_path: Path) -> None:
     assert load_config(path, {}).server.port == 1234
 
 
+def test_llm_think_accepts_bool_or_effort(tmp_path: Path) -> None:
+    base = {"RAIDA_LLM__MODEL": "m", "RAIDA_PATHS__DATA_DIR": str(tmp_path)}
+    assert load_config(None, base).llm.think is None
+    assert load_config(None, {**base, "RAIDA_LLM__THINK": "false"}).llm.think is False
+    assert load_config(None, {**base, "RAIDA_LLM__THINK": "high"}).llm.think == "high"
+    with pytest.raises(ConfigError, match=r"llm\.think"):
+        load_config(None, {**base, "RAIDA_LLM__THINK": "maybe"})
+
+
+def test_default_data_dir_is_absolute_and_expanded() -> None:
+    cfg = load_config(None, {"RAIDA_LLM__MODEL": "m"})
+    assert cfg.paths.data_dir.is_absolute()
+    assert "~" not in cfg.paths.data_dir.parts
+    assert cfg.paths.data_dir == Path.home() / cfg.paths.data_dir.relative_to(Path.home())
+
+
 def test_missing_explicit_file_fails(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.toml", {})

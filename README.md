@@ -36,6 +36,13 @@ Research behind the choices, with sources: `docs/landscape-2026.md`.
 - macOS 14 or newer on Apple Silicon (M1 or later). macOS 15+ recommended.
 - [Homebrew](https://brew.sh).
 - Network access once, to install packages and download models. Afterwards raida runs offline.
+  Hosts involved: `github.com` and `ghcr.io` (Homebrew), `pypi.org` and
+  `files.pythonhosted.org` (Python packages), `ollama.com` and `registry.ollama.ai` (LLM
+  weights), `huggingface.co`, `cdn-lfs.hf.co` and `*.xethub.hf.co` (transcription weights).
+  Managed corporate networks often filter the model hosts while leaving PyPI open; ask for an
+  exception, or pull on another network and copy the files (`docs/model-setup.md`, "Offline
+  distribution"). Until then the `apple` transcription backend and any model already in
+  Ollama keep the app usable.
 
 ## Getting started
 
@@ -50,9 +57,9 @@ make dev                      # starts the server and opens the browser
 environment with `uv`, starts Ollama, pulls the configured LLM (default `gpt-oss:120b`, about
 65 GB) and downloads the transcription weights (about 6 GB). The pulls are the slow part.
 
-Ollama has to be running whenever raida runs (`ollama serve`, or the setup script's background
-instance). The launcher applies these settings for it: one request at a time, one hour
-keep-alive, flash attention on, 8-bit KV cache.
+Ollama has to be running whenever raida runs: `make ollama` in a second terminal, or the setup
+script's background instance. Both apply these settings: one request at a time, one hour
+keep-alive, flash attention on, 8-bit KV cache, cloud features off.
 
 ## Using the app
 
@@ -68,7 +75,9 @@ keep-alive, flash attention on, 8-bit KV cache.
 
 Languages: sources default to automatic language detection. Parakeet handles 25 European
 languages; anything else routes to Whisper large-v3. Pick a language explicitly per source or
-for all new sources when detection guesses wrong.
+for all new sources when detection guesses wrong. The `apple` backend has no detector of its
+own: choose the language under "Language for new sources" before adding media, otherwise the
+source fails with a message saying so.
 
 ## Configuration
 
@@ -82,6 +91,7 @@ variable `RAIDA_<SECTION>__<KEY>`, for example `RAIDA_LLM__MODEL=gemma4:31b`.
 | `llm.base_url` | `http://127.0.0.1:11434` | model server |
 | `llm.model` | required | model name as the server knows it |
 | `llm.synthesis_budget_tokens` | `64000` | inputs above this are condensed first |
+| `llm.think` | unset | Ollama only: `false` turns off reasoning for hybrid models with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6); `"low"`, `"medium"` or `"high"` sets the effort for gpt-oss. Leave unset for thinking-only tags such as Qwen3 Thinking-2507, which otherwise leak reasoning into the answer |
 | `transcribe.backend` | `parakeet` | `parakeet`, `whisper`, `apple` (macOS 26+, needs `brew install yap`) |
 | `transcribe.allow_model_download` | `false` | set `true` only while fetching weights |
 | `ocr.languages` | `["en-US"]` | Apple Vision language preference for scanned pages |
@@ -125,10 +135,29 @@ Layout: `src/raida/api` (routes, SSE), `src/raida/pipeline` (scheduler, stages),
 - Partial CPU offload or slow first token: the model plus context does not fit the GPU memory
   cap. Raise it with `sudo sysctl iogpu.wired_limit_mb=<MB>` (resets on reboot) or pick a
   smaller model.
-- PDF export falls back to fpdf2: install `pango` with Homebrew and start the app with
-  `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`.
+- PDF export falls back to fpdf2: install `pango` with Homebrew. `make dev` and `make doctor`
+  set `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` so WeasyPrint finds it; export the same
+  variable when calling `uv run raida serve` directly.
 - Scanned PDF fails with an OCR message: OCR uses Apple Vision and needs `uv sync --extra mac`.
 - A source is stuck: cancel it and re-run; the cache means finished work is not repeated.
+- Media with no speech (silence, music, a test tone) becomes a ready source with an empty
+  transcript, not a failure.
+- A folder literally named `~` appeared next to the app: an earlier build did not expand the
+  default data directory. Delete that folder; data now lives under
+  `~/Library/Application Support/raida` as documented (`raida doctor` prints the path).
+- The answer takes a long time to start, or is cut off, with a reasoning model: the model thinks
+  first, raida shows only the final answer, and thinking counts against `num_predict`. Raise
+  `llm.output_reserve_tokens` (16384 works for Qwen3 Thinking-2507), or set `llm.think = false`
+  for a hybrid model that has a non-thinking mode. Reasoning text inside the answer, ending in
+  `</think>`, means `think = false` was set for a thinking-only tag: remove it.
+- `ollama pull` or `scripts/pull-models.sh` fail with TLS or "socket is not connected" errors
+  while `uv sync` works: a network filter is blocking the model hosts listed under
+  Prerequisites. Meanwhile set `transcribe.backend = "apple"` (macOS 26+, `brew install yap`)
+  and `llm.model` to a model `ollama list` already shows.
+- `which brew` prints `/usr/local/bin/brew` on an Apple Silicon Mac: that is the Intel Homebrew,
+  and packages from it are x86_64. `scripts/setup-mac.sh` uses `/opt/homebrew/bin/brew`
+  explicitly; do the same when installing by hand. If the first `ffmpeg` on PATH is the Intel
+  one, set `transcribe.ffmpeg_path = "/opt/homebrew/bin/ffmpeg"`.
 
 ## Licenses
 

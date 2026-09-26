@@ -10,18 +10,23 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
-if ! command -v brew >/dev/null 2>&1; then
-  echo "Homebrew is required: https://brew.sh" >&2
+# Use the Apple Silicon Homebrew explicitly. Macs that also carry the Intel Homebrew under
+# /usr/local usually list it first on PATH; its packages are x86_64, and MLX cannot run on an
+# x86_64 Python.
+BREW=/opt/homebrew/bin/brew
+if [[ ! -x "$BREW" ]]; then
+  echo "Apple Silicon Homebrew not found at /opt/homebrew. Install it: https://brew.sh" >&2
   exit 1
 fi
+export PATH="/opt/homebrew/bin:$PATH"
 
 echo "==> Homebrew packages (ffmpeg, pango for PDF export, uv, ollama)"
-brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
-brew list pango  >/dev/null 2>&1 || brew install pango
-brew list uv     >/dev/null 2>&1 || brew install uv
+"$BREW" list ffmpeg >/dev/null 2>&1 || "$BREW" install ffmpeg
+"$BREW" list pango  >/dev/null 2>&1 || "$BREW" install pango
+"$BREW" list uv     >/dev/null 2>&1 || "$BREW" install uv
 if ! command -v ollama >/dev/null 2>&1; then
   # The formula (not the auto-updating app cask) keeps the install reproducible and offline.
-  brew install ollama
+  "$BREW" install ollama
 fi
 
 echo "==> Python environment (Python 3.12, pinned dependencies, Apple extras)"
@@ -37,6 +42,7 @@ MODEL="$(uv run python -c 'from raida.config import load_config; print(load_conf
 
 echo "==> Starting Ollama (if not running) with settings for this app"
 export OLLAMA_NUM_PARALLEL=1 OLLAMA_KEEP_ALIVE=1h OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0
+export OLLAMA_NO_CLOUD=1
 if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
   nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
   sleep 2

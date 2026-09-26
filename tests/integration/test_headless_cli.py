@@ -16,7 +16,7 @@ def test_cli_doctor_and_process(tmp_path: Path) -> None:
         "RAIDA_TRANSCRIBE__BACKEND": "fake",
         "RAIDA_OCR__ENABLED": "false",
         "RAIDA_PATHS__DATA_DIR": str(tmp_path / "data"),
-        "RAIDA_LOG_LEVEL": "WARNING",
+        "RAIDA_LOG_LEVEL": "INFO",  # the production default; INFO-level log calls must work
     }
     doctor = subprocess.run(
         [sys.executable, "-m", "raida", "doctor"],

@@ -54,7 +54,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             print(f"  - {failure}", file=sys.stderr)
         return 1
     if not report.llm.ok:
-        log.warning("llm_not_ready", detail=report.llm.detail)  # type: ignore[call-arg]
+        log.warning("llm_not_ready", extra={"detail": report.llm.detail})
     host, port = config.server.host, args.port or config.server.port
     url = f"http://{host}:{port}/"
     app = create_app(config, initial_health=report)
