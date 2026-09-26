@@ -84,6 +84,10 @@ folder must be listed under `paths.allowed_roots` in `raida.toml` (the default l
 Click "View text" on a source to see exactly what the model will read, with `[p. N]` page anchors
 for documents and `[hh:mm:ss]` time codes for recordings.
 
+Every file you have ever added is in the shared library. Click "From library" in a new session,
+tick the files you want, and they appear ready within a second because their processed text is
+reused. A file leaves the library when the last session that holds it removes it.
+
 ### Set the language for recordings
 
 Sources default to automatic language detection. With the Apple transcription engine there is no
@@ -107,6 +111,10 @@ instructions say what to produce, for whom, and how long:
 If sources are still processing, the run waits for them. Tick "Run now with ready sources only"
 to skip the waiting ones.
 
+Write the instruction in whatever language you like. The answer comes back in the language and
+script of your instruction, whatever language the sources are in: an instruction in Traditional
+Chinese gets a Traditional Chinese answer about English recordings.
+
 The answer streams in as formatted text with citations back to the sources, such as
 `[notes.md]` or `[p. 3]`. With a reasoning model, the first words can take a while to appear:
 the model thinks first and raida shows only the final answer. Long inputs take longer to read;
@@ -123,8 +131,10 @@ data folder and downloaded by the browser.
 ### Sessions
 
 A session holds its sources, conversation and exports. Use the top bar to create, rename, switch
-or delete sessions. Deleting a session removes its uploaded copies; files added by path are never
-deleted.
+or delete sessions. A new session is named with the date and time, then renamed after its first
+answer to match what you asked, in your language. Rename it yourself whenever you like; a name
+you chose is never changed automatically. Deleting a session removes its uploaded copies unless
+another session still uses them; files added by path are never deleted.
 
 ## 5. Where your data lives
 
@@ -177,6 +187,7 @@ Options, in order of preference:
 | Chinese transcript comes out in the wrong script | Pick "Chinese (Traditional)" for Traditional characters, "Chinese (Simplified)" for Simplified, or "Cantonese (Hong Kong)". Changing the language on a source re-transcribes it |
 | The answer starts after a long pause | The model is reasoning first. Wait, or set `llm.think = false` for a model that supports it |
 | The answer is cut off | Raise `llm.output_reserve_tokens` in `raida.toml` (16384 is generous) |
+| The answer claims the sources say nothing relevant, and its "in" count is tiny | The prompt did not fit the model's context. raida now measures Chinese, Japanese and Korean text correctly and refuses to send a prompt that would overflow; if you see the refusal, raise `llm.synthesis_budget_tokens` for a large-context model or lower it to let raida condense first |
 | Slow, and the strip shows less than 100% GPU | The model does not fit in GPU memory. Use a smaller model or raise the cap as described in `model-setup.md` |
 | PDF export looks plain | Install `pango` with Homebrew (`/opt/homebrew/bin/brew install pango`) and start with `make dev` |
 | A scanned PDF fails with an OCR message | Run `uv sync --extra mac` in the `raida` folder |

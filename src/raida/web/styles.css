@@ -110,6 +110,11 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .dialog-wide { width: min(900px, 94vw); }
 .dialog-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.library-list { max-height: 55vh; overflow-y: auto; display: grid; gap: 4px; margin: 10px 0; }
+.library-item { display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 13px; }
+.library-item .source-name { min-width: 0; }
+.library-item .library-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.library-item.in-session { opacity: .6; }
 .text-preview { max-height: 70vh; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 10px; border-radius: 6px; }
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-size: 13px; max-width: 80vw; z-index: 20; }

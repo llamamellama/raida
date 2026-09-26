@@ -61,7 +61,8 @@ class LlmConfig(StrictModel):
     # the effort for gpt-oss. Thinking-only tags (Qwen3 Thinking-2507) ignore False and then
     # leak their reasoning into the answer, so leave it None for them (server default).
     think: bool | Literal["low", "medium", "high"] | None = None
-    suggest_titles: bool = False
+    # Name a session after its first answer (one extra short model call per session).
+    suggest_titles: bool = True
 
     @property
     def num_ctx(self) -> int:

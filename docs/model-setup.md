@@ -24,6 +24,18 @@ Prefer `-mlx` tags when Ollama offers one for your model (faster on Apple Silico
 the context length with `ollama ps` afterwards: some MLX tags currently ignore the configured
 limit. If you see a smaller `CONTEXT` than requested, use the GGUF tag.
 
+### Token estimates for non-Latin scripts
+
+raida plans with a character heuristic (`llm.chars_per_token`, default 3.7, which fits English).
+Chinese, Japanese and Korean tokenize at close to one token per character, so the estimator
+counts those scripts separately. Measured on this project's M2 Max with `qwen3:30b-a3b` on a
+Traditional Chinese transcript: 31,259 characters were 22,842 tokens (1.37 characters per
+token, 0.83 tokens per CJK character), and the prefill ran at about 245 tokens per second at
+that length, far below the rate for short English prompts. Four two-hour Mandarin recordings
+are therefore about 90k tokens, not the 35k the old rule reported, and take about six minutes to
+read before the first visible token. Plan `llm.synthesis_budget_tokens` from real token counts:
+the "in" figure on each answer is the server's own count.
+
 ### Context budget
 
 Advertised context windows (128k-256k) are larger than the range where open models keep full

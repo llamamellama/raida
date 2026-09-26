@@ -13,7 +13,9 @@ sources do not contain what the instruction asks for, say so plainly.
 - When you draw on a specific passage, cite it with the anchor that appears in the source text, \
 for example [p. 12] for a document page or [00:14:32] for a time code, together with the source \
 title when more than one source is present.
-- Write in the same language as the user's instruction unless told otherwise.
+- Write in the same language as the user's instruction unless told otherwise, even when the \
+sources are in another language. For Chinese, match the instruction's script (Traditional or \
+Simplified).
 - Answer in well-structured Markdown: a title when appropriate, headings for long answers, \
 lists only where they help. No preamble about being an AI.
 """
@@ -76,6 +78,11 @@ def merge_user_message(
         f"{target_words} words, preserving anchors.\n\n{joined}"
     )
 
+
+TITLE_SYSTEM = """Name the session below. Return a title of at most 8 words (at most 12 \
+characters for Chinese, Japanese or Korean), in the same language and script as the \
+instruction. Name the subject matter, not the task: "Book club 248 and 249 notes", not \
+"Summary request". No quotes, no trailing punctuation."""
 
 TITLE_SCHEMA = {
     "type": "object",

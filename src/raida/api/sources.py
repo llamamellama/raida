@@ -9,7 +9,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from raida.api.deps import State
-from raida.models import Source
+from raida.models import LibraryEntry, Source
 from raida.pipeline import ingest
 from raida.pipeline.events import Event
 
@@ -24,6 +24,59 @@ class ByPathBody(BaseModel):
 
 class LanguagePatch(BaseModel):
     language: str = Field(min_length=1, max_length=16)
+
+
+class FromLibraryBody(BaseModel):
+    sha256s: list[str] = Field(min_length=1, max_length=500)
+    # None keeps the language each file was last processed with, so the cache serves it.
+    language: str | None = None
+
+
+@router.get("/library", response_model=list[LibraryEntry])
+async def list_library(state: State) -> list[LibraryEntry]:
+    """Every distinct file uploaded or referenced in any session."""
+    return await asyncio.to_thread(state.db.list_library)
+
+
+@router.post(
+    "/sessions/{session_id}/sources/from-library",
+    response_model=list[Source],
+    status_code=201,
+)
+async def add_from_library(session_id: str, body: FromLibraryBody, state: State) -> list[Source]:
+    """Attach files already known to raida to this session. Processed text is reused from the
+    cache, so the sources are ready almost immediately."""
+    await asyncio.to_thread(state.db.get_session, session_id)
+    library = {e.sha256: e for e in await asyncio.to_thread(state.db.list_library)}
+    result: list[Source] = []
+    for sha in body.sha256s:
+        entry = library.get(sha)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"no file with hash {sha[:12]} in library")
+        existing = await asyncio.to_thread(state.db.find_source_by_sha, session_id, sha)
+        if existing is not None:
+            result.append(existing)
+            continue
+        if not await asyncio.to_thread(Path(entry.stored_path).is_file):
+            raise HTTPException(
+                status_code=409, detail=f"{entry.original_name} is no longer at its stored path"
+            )
+        source = ingest.build_source(
+            session_id=session_id,
+            original_name=entry.original_name,
+            stored_path=Path(entry.stored_path),
+            sha256=entry.sha256,
+            size_bytes=entry.size_bytes,
+            language=body.language or entry.language,
+            managed=entry.managed,
+        )
+        await asyncio.to_thread(state.db.create_source, source)
+        state.scheduler.events.publish(
+            Event("source.updated", source.model_dump(), session_id=session_id)
+        )
+        state.scheduler.submit_source(source.id)
+        result.append(source)
+    return result
 
 
 async def _chunks(upload: UploadFile) -> AsyncIterator[bytes]:

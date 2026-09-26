@@ -68,6 +68,9 @@ keep-alive, flash attention on, 8-bit KV cache, cloud features off.
 
 1. Drop files onto the left pane or click "Choose files". Very large local videos can be
    referenced in place with "Add by path" (folders must be listed under `paths.allowed_roots`).
+   Every file added in any session is in the shared library: "From library" lists them, and
+   adding one to another session reuses its processed text, so it is ready at once. A file
+   leaves the library when its last session removes it.
 2. Each source shows its stage (extracting, decoding audio, detecting language, transcribing,
    OCR) and a progress bar. Failed sources show the reason and a Re-run button. "View text"
    shows exactly what the model will read, with `[p. N]` page anchors or `[hh:mm:ss]` time codes.
@@ -75,6 +78,12 @@ keep-alive, flash attention on, 8-bit KV cache, cloud features off.
    waits for them; tick "Run now with ready sources only" to skip waiting.
 4. The answer streams in as Markdown. Export it as .txt, .md, .pdf or .docx, or copy it.
 5. Sessions keep their sources, chat and exports; switch or create sessions from the top bar.
+   A new session gets a timestamp name and is renamed after its first answer, in the language
+   of the instruction. Rename it yourself at any time; a title you chose is never overwritten.
+
+Instructions can be in any language the model understands. The answer follows the language and
+script of the instruction (Traditional Chinese in, Traditional Chinese out), whatever language
+the sources are in.
 
 Languages: sources default to automatic language detection. Parakeet handles 25 European
 languages; anything else routes to Whisper large-v3. Pick a language explicitly per source or
@@ -93,7 +102,8 @@ variable `RAIDA_<SECTION>__<KEY>`, for example `RAIDA_LLM__MODEL=gemma4:31b`.
 | `llm.backend` | `ollama` | `ollama` (native API) or `openai_compatible` (llama-server, LM Studio, mlx_lm.server) |
 | `llm.base_url` | `http://127.0.0.1:11434` | model server |
 | `llm.model` | required | model name as the server knows it |
-| `llm.synthesis_budget_tokens` | `64000` | inputs above this are condensed first |
+| `llm.synthesis_budget_tokens` | `64000` | inputs above this are condensed first. Token estimates are script-aware: Chinese, Japanese and Korean count close to one token per character |
+| `llm.suggest_titles` | `true` | name a session after its first answer (one short extra model call) |
 | `llm.think` | unset | Ollama only: `false` turns off reasoning for hybrid models with a non-thinking mode (Qwen3 2504 tags, Qwen3.5/3.6); `"low"`, `"medium"` or `"high"` sets the effort for gpt-oss. Leave unset for thinking-only tags such as Qwen3 Thinking-2507, which otherwise leak reasoning into the answer |
 | `transcribe.backend` | `parakeet` | `parakeet`, `whisper`, `apple` (macOS 26+, needs `brew install yap`) |
 | `transcribe.allow_model_download` | `false` | set `true` only while fetching weights |
@@ -143,6 +153,12 @@ Layout: `src/raida/api` (routes, SSE), `src/raida/pipeline` (scheduler, stages),
   variable when calling `uv run raida serve` directly.
 - Scanned PDF fails with an OCR message: OCR uses Apple Vision and needs `uv sync --extra mac`.
 - A source is stuck: cancel it and re-run; the cache means finished work is not repeated.
+- The answer ignores the sources, or says they contain nothing relevant, and the "in" token
+  count on the answer is tiny: the prompt was larger than the model's context and the server
+  dropped the sources. raida now estimates Chinese, Japanese and Korean text at close to one
+  token per character (the old rule under-counted almost threefold) and refuses to send a prompt
+  that would not fit. If you still hit the limit, raise `llm.synthesis_budget_tokens` for a
+  model with a large context, or let map-reduce condense by lowering it.
 - A recording fails with "needs a language and language detection is off": the `apple`
   backend cannot detect languages. Pick the language on the source (or under "Language for new
   sources" before adding media); the source re-runs on its own.

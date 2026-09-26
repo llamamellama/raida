@@ -60,6 +60,38 @@ export function initSources(store, els) {
   });
   els.textClose.addEventListener("click", () => els.textDialog.close());
 
+  // Add from library: files already added in any session, reused through the processed cache.
+  els.addFromLibrary.addEventListener("click", async () => {
+    try {
+      const entries = await api.listLibrary();
+      const inSession = new Set([...store.state.sources.values()].map((s) => s.sha256));
+      els.libraryList.innerHTML = entries.map((e) => {
+        const here = inSession.has(e.sha256);
+        const lang = LANGUAGES.find(([c]) => c === e.language)?.[1] || e.language;
+        const meta = [e.kind, formatBytes(e.size_bytes), lang, e.token_estimate ? `~${e.token_estimate.toLocaleString()} tok` : null,
+          `${e.session_ids.length} session${e.session_ids.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+        return `<label class="library-item ${here ? "in-session" : ""}">
+          <input type="checkbox" name="sha" value="${e.sha256}" ${here ? "checked disabled" : ""}>
+          <span class="source-kind">${e.kind}</span>
+          <span class="source-name" title="${escapeAttr(e.original_name)}">${escapeHtml(e.original_name)}</span>
+          <span class="library-meta">${escapeHtml(meta)}</span>
+        </label>`;
+      }).join("");
+      els.libraryEmpty.hidden = entries.length > 0;
+      els.libraryDialog.showModal();
+    } catch (err) { toast(err.message, true); }
+  });
+  els.libraryCancel.addEventListener("click", () => els.libraryDialog.close());
+  els.libraryForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const shas = [...els.libraryList.querySelectorAll("input[name=sha]:checked:not(:disabled)")].map((i) => i.value);
+    if (!shas.length) { els.libraryDialog.close(); return; }
+    try {
+      await api.addFromLibrary(sessionId(), shas, null);
+      els.libraryDialog.close();
+    } catch (err) { toast(err.message, true); }
+  });
+
   // List rendering
   function render(state) {
     const list = els.sourceList;

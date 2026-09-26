@@ -12,7 +12,7 @@ from typing import Any
 from raida.config import Config
 from raida.db import Database
 from raida.llm import prompts
-from raida.llm.base import GenerationOptions, LlmBackend, Usage
+from raida.llm.base import GenerationOptions, LlmBackend, LlmError, Usage
 from raida.llm.chunking import split_markdown
 from raida.llm.tokens import estimate_tokens
 from raida.models import Message, ProcessedSource, Strategy
@@ -110,6 +110,16 @@ class Synthesizer:
             )
         messages.extend(self._history_messages(history))
         messages.append({"role": "user", "content": instruction})
+        # Servers truncate silently when a prompt exceeds num_ctx, dropping the sources first.
+        # Fail loudly instead; with accurate estimates the planner keeps us well under this.
+        prompt_tokens = sum(self._tokens(m["content"]) for m in messages)
+        room = self.config.llm.num_ctx - self.config.llm.output_reserve_tokens
+        if prompt_tokens > room:
+            raise LlmError(
+                f"The prompt is about {prompt_tokens} tokens but the context window leaves room "
+                f"for {room}. Raise llm.synthesis_budget_tokens (and check the model's context "
+                "length), or remove sources from this session."
+            )
         await progress("Writing")
         async with self.llm_slot:
             async for delta in self.llm.stream_chat(messages, self._options(), usage):
@@ -127,16 +137,18 @@ class Synthesizer:
         if not self.config.llm.suggest_titles:
             return None
         messages = [
-            {"role": "system", "content": "Return a short title for the document below."},
+            {"role": "system", "content": prompts.TITLE_SYSTEM},
             {
                 "role": "user",
-                "content": f"Instruction: {instruction[:500]}\n\nDocument:\n{answer[:4000]}",
+                "content": f"Instruction: {instruction[:500]}\n\nDocument:\n{answer[:3000]}",
             },
         ]
         try:
             async with self.llm_slot:
+                # Reasoning models think before the JSON and thinking counts against
+                # num_predict, so leave real room; the title itself is a few tokens.
                 result = await self.llm.complete_json(
-                    messages, prompts.TITLE_SCHEMA, self._options(64)
+                    messages, prompts.TITLE_SCHEMA, self._options(2048)
                 )
         except Exception as exc:
             log.warning("title_suggestion_failed", extra={"error": str(exc)[:200]})

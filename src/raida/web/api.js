@@ -20,7 +20,11 @@ async function request(method, url, body, opts = {}) {
 export const api = {
   health: () => request("GET", "/api/health"),
   listSessions: () => request("GET", "/api/sessions"),
-  createSession: (title) => request("POST", "/api/sessions", { title }),
+  // Without a title the server names the session and renames it after the first answer.
+  createSession: (title) => request("POST", "/api/sessions", title ? { title } : {}),
+  listLibrary: () => request("GET", "/api/library"),
+  addFromLibrary: (sessionId, sha256s, language) =>
+    request("POST", `/api/sessions/${sessionId}/sources/from-library`, { sha256s, language: language || null }),
   getSession: (id) => request("GET", `/api/sessions/${id}`),
   renameSession: (id, title) => request("PATCH", `/api/sessions/${id}`, { title }),
   deleteSession: (id) => request("DELETE", `/api/sessions/${id}`),

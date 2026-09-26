@@ -15,6 +15,8 @@ const els = {
   summary: $("sources-summary"), pathDialog: $("path-dialog"), pathForm: $("path-form"), pathInput: $("path-input"),
   pathCancel: $("path-cancel"), textDialog: $("text-dialog"), textDialogTitle: $("text-dialog-title"),
   textDialogBody: $("text-dialog-body"), textClose: $("text-close"),
+  addFromLibrary: $("add-from-library"), libraryDialog: $("library-dialog"), libraryForm: $("library-form"),
+  libraryList: $("library-list"), libraryCancel: $("library-cancel"), libraryEmpty: $("library-empty"),
   composer: $("composer"), instruction: $("instruction"), readyOnly: $("ready-only"), send: $("send"),
   cancelRun: $("cancel-run"), messageList: $("message-list"), chatEmpty: $("chat-empty"),
   sessionSelect: $("session-select"), newSession: $("new-session"), renameSession: $("rename-session"),
@@ -59,9 +61,8 @@ async function refreshSessions() {
 
 els.sessionSelect.addEventListener("change", () => selectSession(els.sessionSelect.value));
 els.newSession.addEventListener("click", async () => {
-  const title = prompt("Session title", `Session ${new Date().toLocaleString()}`);
-  if (title === null) return;
-  const s = await api.createSession(title || "Untitled session");
+  // Sessions are named automatically after their first answer; Rename is there for later.
+  const s = await api.createSession();
   await refreshSessions();
   await selectSession(s.id);
 });
@@ -91,7 +92,7 @@ async function boot() {
     await refreshSessions();
     let id = localStorage.getItem("raida.session");
     if (!id || !store.state.sessions.some((s) => s.id === id)) {
-      id = store.state.sessions[0]?.id || (await api.createSession("First session")).id;
+      id = store.state.sessions[0]?.id || (await api.createSession()).id;
       await refreshSessions();
     }
     await selectSession(id);

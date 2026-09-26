@@ -1,9 +1,11 @@
--- raida schema, version 1. Applied once via PRAGMA user_version.
+-- raida schema, version 2. Applied to fresh databases via PRAGMA user_version; existing
+-- databases are upgraded step by step in Database.migrate (v2 added sessions.title_auto).
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
+    title_auto  INTEGER NOT NULL DEFAULT 1,  -- 1 until the user renames the session
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );

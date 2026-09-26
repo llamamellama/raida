@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterable, Sequence
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 from raida.models import (
     Artifact,
     Job,
+    LibraryEntry,
     Message,
     ProcessedCacheEntry,
     Session,
@@ -25,9 +27,9 @@ from raida.models import (
     utc_now,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _JSON_FIELDS = {"meta", "token_usage"}
-_BOOL_FIELDS = {"managed", "run_with_ready_only"}
+_BOOL_FIELDS = {"managed", "run_with_ready_only", "title_auto"}
 
 
 class NotFoundError(LookupError):
@@ -81,8 +83,15 @@ class Database:
             current = self._conn.execute("PRAGMA user_version").fetchone()[0]
             if current >= SCHEMA_VERSION:
                 return
-            schema = resources.files("raida.db").joinpath("schema.sql").read_text("utf-8")
-            self._conn.executescript(schema)
+            if current < 1:
+                schema = resources.files("raida.db").joinpath("schema.sql").read_text("utf-8")
+                self._conn.executescript(schema)
+            elif current < 2:
+                columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sessions)")}
+                if "title_auto" not in columns:
+                    self._conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 1"
+                    )
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- generic helpers -------------------------------------------------------------------
@@ -123,9 +132,14 @@ class Database:
 
     # -- sessions --------------------------------------------------------------------------
 
-    def create_session(self, title: str = "Untitled session") -> Session:
+    def create_session(self, title: str | None = None) -> Session:
+        """A session named by the caller keeps that name; one created without a title gets a
+        timestamp name and is renamed automatically after its first answer."""
         now = utc_now()
-        session = Session(id=new_id(), title=title, created_at=now, updated_at=now)
+        auto = title is None or not title.strip()
+        if auto:
+            title = f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        session = Session(id=new_id(), title=title, title_auto=auto, created_at=now, updated_at=now)
         self._insert("sessions", session.model_dump())
         return session
 
@@ -180,6 +194,39 @@ class Database:
     def delete_source(self, source_id: str) -> None:
         if self._execute("DELETE FROM sources WHERE id = ?", (source_id,)) == 0:
             raise NotFoundError(f"source {source_id} not found")
+
+    def list_library(self) -> list[LibraryEntry]:
+        """Every distinct file known to any session, newest use first: the shared library."""
+        rows = self._fetchall("SELECT * FROM sources ORDER BY created_at DESC")
+        by_sha: dict[str, LibraryEntry] = {}
+        for row in rows:
+            source = Source.model_validate(row)
+            entry = by_sha.get(source.sha256)
+            if entry is None:
+                by_sha[source.sha256] = LibraryEntry(
+                    sha256=source.sha256,
+                    source_id=source.id,
+                    original_name=source.original_name,
+                    kind=source.kind,
+                    size_bytes=source.size_bytes,
+                    language=source.language,
+                    managed=source.managed,
+                    stored_path=source.stored_path,
+                    status=source.status,
+                    token_estimate=source.token_estimate,
+                    session_ids=[source.session_id],
+                    last_used_at=source.updated_at,
+                )
+            elif source.session_id not in entry.session_ids:
+                entry.session_ids.append(source.session_id)
+        return list(by_sha.values())
+
+    def find_source_by_sha(self, session_id: str, sha256: str) -> Source | None:
+        row = self._fetchone(
+            "SELECT * FROM sources WHERE session_id = ? AND sha256 = ? ORDER BY created_at LIMIT 1",
+            (session_id, sha256),
+        )
+        return Source.model_validate(row) if row else None
 
     def sources_referencing(self, sha256: str) -> int:
         row = self._fetchone("SELECT COUNT(*) AS n FROM sources WHERE sha256 = ?", (sha256,))

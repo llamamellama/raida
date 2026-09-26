@@ -245,7 +245,12 @@ class Scheduler:
         entry = await asyncio.to_thread(cache.lookup, self.db, key)
         if entry is not None:
             log.info("cache_hit", extra={"source_id": source.id})
-            doc = cache.load_processed(entry.processed_path, source.id, source.original_name)
+            doc = cache.load_processed(
+                entry.processed_path,
+                source.id,
+                source.original_name,
+                self.config.llm.chars_per_token,
+            )
             doc.meta = {**doc.meta, "cache_hit": True}
             return doc, variant
         path = Path(source.stored_path)
@@ -468,7 +473,11 @@ class Scheduler:
             ]
             sources = await asyncio.to_thread(self.db.list_sources, session_id)
             ready = [s for s in sources if s.status == "ready" and s.processed_path]
-            docs = [cache.load_processed(s.processed_path, s.id, s.original_name) for s in ready]  # type: ignore[arg-type]
+            cpt = self.config.llm.chars_per_token
+            docs = [
+                cache.load_processed(s.processed_path, s.id, s.original_name, cpt)  # type: ignore[arg-type]
+                for s in ready
+            ]
             await self._set_message(message_id, status="streaming", content="")
 
             async def emit(delta: str) -> None:
@@ -497,12 +506,7 @@ class Scheduler:
             await self._set_message(
                 message_id, status="done", strategy=result.strategy, token_usage=result.usage
             )
-            title = await self.synthesizer.suggest_title(instruction, final.content)
-            if title:
-                session = await asyncio.to_thread(self.db.update_session, session_id, title=title)
-                self.events.publish(
-                    Event("session.updated", session.model_dump(), session_id=session_id)
-                )
+            await self._maybe_name_session(session_id, history_all, instruction, final.content)
         except asyncio.CancelledError:
             await self._set_message(message_id, status="cancelled")
             raise
@@ -511,6 +515,25 @@ class Scheduler:
             await self._set_message(
                 message_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:1000]
             )
+
+    async def _maybe_name_session(
+        self, session_id: str, history: list[Message], instruction: str, answer: str
+    ) -> None:
+        """Name the session after its first completed answer, unless the user named it."""
+        first_answer = not any(m.role == "assistant" and m.status == "done" for m in history)
+        if not first_answer:
+            return
+        try:
+            session = await asyncio.to_thread(self.db.get_session, session_id)
+        except NotFoundError:
+            return
+        if not session.title_auto:
+            return
+        title = await self.synthesizer.suggest_title(instruction, answer)
+        if not title:
+            return
+        session = await asyncio.to_thread(self.db.update_session, session_id, title=title)
+        self.events.publish(Event("session.updated", session.model_dump(), session_id=session_id))
 
 
 def _ocr_locale(base: str) -> str:

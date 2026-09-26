@@ -7,6 +7,17 @@ def test_estimate_tokens_has_margin() -> None:
     assert estimate_tokens("a" * 370, 3.7) == 115
 
 
+def test_estimate_tokens_counts_cjk_near_one_token_per_character() -> None:
+    """Measured with Qwen3 on a Mandarin transcript: 0.83 tokens per CJK character. The old
+    3.7-characters-per-token rule under-counted almost threefold and overflowed the context."""
+    han = "讀書會正式開始" * 100  # 700 Traditional Chinese characters
+    estimate = estimate_tokens(han, 3.7)
+    assert 600 <= estimate <= 750, estimate
+    assert estimate_tokens("가" * 100, 3.7) >= 100  # Hangul: about one token per syllable
+    mixed = han + "a" * 370
+    assert abs(estimate_tokens(mixed, 3.7) - (estimate + 115)) <= 2
+
+
 def test_split_respects_budget_and_keeps_paragraphs() -> None:
     paragraphs = [f"[00:{i:02d}:00] Paragraph {i} " + "word " * 60 for i in range(40)]
     text = "\n\n".join(paragraphs)

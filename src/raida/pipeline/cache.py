@@ -8,6 +8,7 @@ from pathlib import Path
 
 from raida.config import Config
 from raida.db import Database
+from raida.llm.tokens import estimate_tokens
 from raida.models import ProcessedCacheEntry, ProcessedSource, utc_now
 
 # Bump when a fix changes processed output for the same input; v2: the media stage
@@ -44,12 +45,20 @@ def store_processed(
     return md_path
 
 
-def load_processed(path: str | Path, source_id: str, title: str) -> ProcessedSource:
+def load_processed(
+    path: str | Path, source_id: str, title: str, chars_per_token: float | None = None
+) -> ProcessedSource:
+    """Load a processed document. With ``chars_per_token`` the token estimate is recomputed
+    with the current estimator instead of trusting the stored one, so planning stays correct
+    after the estimator changes (it once under-counted CJK text almost threefold)."""
     md_path = Path(path)
     json_path = md_path.with_suffix(".json")
     sidecar = json.loads(json_path.read_text(encoding="utf-8"))
     sidecar.update({"source_id": source_id, "title": title})
-    return ProcessedSource(text_markdown=md_path.read_text(encoding="utf-8"), **sidecar)
+    text = md_path.read_text(encoding="utf-8")
+    if chars_per_token is not None:
+        sidecar["token_estimate"] = estimate_tokens(text, chars_per_token)
+    return ProcessedSource(text_markdown=text, **sidecar)
 
 
 def lookup(db: Database, key: str) -> ProcessedCacheEntry | None:

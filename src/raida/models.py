@@ -86,8 +86,26 @@ def utc_now() -> str:
 class Session(BaseModel):
     id: str
     title: str
+    title_auto: bool = True  # False once the user has chosen the title themselves
     created_at: str
     updated_at: str
+
+
+class LibraryEntry(BaseModel):
+    """One distinct file across all sessions, identified by content hash."""
+
+    sha256: str
+    source_id: str  # most recent source row carrying this file
+    original_name: str
+    kind: SourceKind
+    size_bytes: int
+    language: str
+    managed: bool
+    stored_path: str
+    status: SourceStatus
+    token_estimate: int | None = None
+    session_ids: list[str] = Field(default_factory=list)
+    last_used_at: str
 
 
 class Source(BaseModel):

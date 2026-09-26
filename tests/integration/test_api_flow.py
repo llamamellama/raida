@@ -79,6 +79,69 @@ async def test_regional_language_code_reaches_the_transcriber(client: httpx.Asyn
     assert done["meta"]["detected_language"] == "zh-TW"
 
 
+async def test_library_shares_sources_across_sessions(client: httpx.AsyncClient) -> None:
+    first = await _session(client)
+    (src,) = await _upload(client, first, "notes.md", language="en")
+    await wait_for(client, f"/api/sources/{src['id']}", TERMINAL)
+
+    library = (await client.get("/api/library")).json()
+    entry = next(e for e in library if e["sha256"] == src["sha256"])
+    assert entry["original_name"] == "notes.md"
+    assert entry["session_ids"] == [first]
+
+    second = await _session(client)
+    r = await client.post(
+        f"/api/sessions/{second}/sources/from-library", json={"sha256s": [src["sha256"]]}
+    )
+    assert r.status_code == 201, r.text
+    (copy,) = r.json()
+    assert copy["session_id"] == second and copy["language"] == "en"
+    done = await wait_for(client, f"/api/sources/{copy['id']}", TERMINAL)
+    assert done["status"] == "ready" and done["meta"].get("cache_hit") is True
+
+    # Adding the same file again to the same session returns the existing source.
+    again = await client.post(
+        f"/api/sessions/{second}/sources/from-library", json={"sha256s": [src["sha256"]]}
+    )
+    assert again.status_code == 201 and again.json()[0]["id"] == copy["id"]
+    library = (await client.get("/api/library")).json()
+    entry = next(e for e in library if e["sha256"] == src["sha256"])
+    assert sorted(entry["session_ids"]) == sorted([first, second])
+
+    # Removing the copy leaves the original session's file in place.
+    assert (await client.delete(f"/api/sources/{copy['id']}")).status_code == 204
+    assert (await client.get(f"/api/sources/{src['id']}")).status_code == 200
+    assert (await client.get(f"/api/sources/{src['id']}/text")).status_code == 200
+
+    unknown = await client.post(
+        f"/api/sessions/{second}/sources/from-library", json={"sha256s": ["0" * 64]}
+    )
+    assert unknown.status_code == 404
+
+
+async def test_session_named_automatically_after_first_answer(client: httpx.AsyncClient) -> None:
+    r = await client.post("/api/sessions", json={})
+    assert r.status_code == 201
+    session = r.json()
+    assert session["title"].startswith("Session ") and session["title_auto"] is True
+    sid = session["id"]
+    await _upload(client, sid, "notes.md")
+    m = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Summarize."})).json()
+    await wait_for(client, f"/api/messages/{m['id']}", {"done", "failed", "cancelled"})
+    detail = (await client.get(f"/api/sessions/{sid}")).json()
+    assert detail["session"]["title"] == "Fake title"  # what the fake backend returns
+
+    # The user's own title wins, before or after the first answer.
+    r = await client.patch(f"/api/sessions/{sid}", json={"title": "Mine"})
+    assert r.json()["title"] == "Mine" and r.json()["title_auto"] is False
+    m2 = (await client.post(f"/api/sessions/{sid}/messages", json={"content": "Again."})).json()
+    await wait_for(client, f"/api/messages/{m2['id']}", {"done", "failed", "cancelled"})
+    assert (await client.get(f"/api/sessions/{sid}")).json()["session"]["title"] == "Mine"
+
+    named = (await client.post("/api/sessions", json={"title": "Chosen"})).json()
+    assert named["title"] == "Chosen" and named["title_auto"] is False
+
+
 async def test_cache_hit_on_same_file(client: httpx.AsyncClient) -> None:
     sid = await _session(client)
     first = (await _upload(client, sid, "notes.md"))[0]

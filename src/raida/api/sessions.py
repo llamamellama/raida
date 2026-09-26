@@ -12,7 +12,8 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 class SessionCreate(BaseModel):
-    title: str = Field(default="Untitled session", max_length=200)
+    # No title: the session gets a timestamp name and is renamed after its first answer.
+    title: str | None = Field(default=None, max_length=200)
 
 
 class SessionPatch(BaseModel):
@@ -20,8 +21,9 @@ class SessionPatch(BaseModel):
 
 
 @router.post("", response_model=Session, status_code=201)
-async def create_session(body: SessionCreate, state: State) -> Session:
-    return await asyncio.to_thread(state.db.create_session, body.title)
+async def create_session(state: State, body: SessionCreate | None = None) -> Session:
+    title = body.title if body is not None else None
+    return await asyncio.to_thread(state.db.create_session, title)
 
 
 @router.get("", response_model=list[Session])
@@ -36,7 +38,10 @@ async def get_session(session_id: str, state: State) -> SessionDetail:
 
 @router.patch("/{session_id}", response_model=Session)
 async def patch_session(session_id: str, body: SessionPatch, state: State) -> Session:
-    return await asyncio.to_thread(state.db.update_session, session_id, title=body.title)
+    # A title chosen by the user is never overwritten by the automatic naming.
+    return await asyncio.to_thread(
+        state.db.update_session, session_id, title=body.title, title_auto=False
+    )
 
 
 @router.delete("/{session_id}", status_code=204)

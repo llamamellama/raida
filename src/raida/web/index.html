@@ -36,6 +36,7 @@
         <div class="dropzone-sub">text, markdown, pdf, docx, srt, vtt, audio, video</div>
         <div class="dropzone-actions">
           <button id="pick-files" class="btn" type="button">Choose files</button>
+          <button id="add-from-library" class="btn btn-quiet" type="button" title="Reuse files already added in any session">From library</button>
           <button id="add-by-path" class="btn btn-quiet" type="button" title="Reference a large local file without uploading">Add by path</button>
         </div>
         <label class="lang-default">
@@ -78,6 +79,19 @@
     <div class="dialog-actions">
       <button class="btn btn-quiet" value="cancel" type="button" id="path-cancel">Cancel</button>
       <button class="btn btn-primary" value="ok" type="submit">Add</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="library-dialog" class="dialog dialog-wide">
+  <form method="dialog" id="library-form">
+    <h3>Add from library</h3>
+    <p class="muted">Every file added in any session. Processed text is reused, so these are ready at once. Files already in this session are shown checked.</p>
+    <div id="library-list" class="library-list"></div>
+    <p id="library-empty" class="muted" hidden>Nothing in the library yet. Drop files into a session first.</p>
+    <div class="dialog-actions">
+      <button class="btn btn-quiet" value="cancel" type="button" id="library-cancel">Cancel</button>
+      <button class="btn btn-primary" value="ok" type="submit">Add selected</button>
     </div>
   </form>
 </dialog>
