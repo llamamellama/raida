@@ -16,7 +16,8 @@ Read `docs/architecture.md` before changing code. The decisions that shape this 
 - Every user-visible change updates `README.md` in the same commit, and adds a line for users
   under `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog: Added, Changed, Deprecated,
   Removed, Fixed, Security). A release renames that section to the version and date, following
-  Semantic Versioning, and sets the same version in `pyproject.toml`.
+  Semantic Versioning, sets the same version in `pyproject.toml` and
+  `src/raida/__init__.py` (then `uv lock`), and tags the release commit `vX.Y.Z`.
 - Tests must pass on Linux CI without MLX or Ollama: keep Apple-only imports lazy and use the
   fake LLM and fake transcriber backends in tests.
 

@@ -1,6 +1,6 @@
 [project]
 name = "raida"
-version = "0.1.0"
+version = "0.3.0"
 description = "Offline harness: ingest text, PDF, audio and video sources in parallel, synthesize with a local LLM, export txt/md/pdf/docx."
 readme = "README.md"
 license = "MIT"

@@ -1,7 +1,7 @@
 # ADR-0010: Every question and answer in a session is context for the next one
 
 - Status: accepted
-- Date: 2026-09-27
+- Date: 2026-09-26
 - Amends: ADR-0006 (the planner dropped old conversation turns before taking notes out of the
   prompt)
 
