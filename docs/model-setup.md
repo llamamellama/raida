@@ -52,8 +52,10 @@ and an 8-bit KV cache read prompts as fast but generated 25% slower. What helps 
 
 Advertised context windows (128k-256k) are larger than the range where open models keep full
 comprehension; published long-context benchmarks show degradation starting between 16k and 64k
-tokens. Normal answers stay under `llm.interactive_budget_tokens` (32000). "Read full text"
-answers use `llm.synthesis_budget_tokens` (64000) and condense sources above that. The server
+tokens. The sources of a normal answer stay under `llm.interactive_budget_tokens` (32000);
+the session's conversation comes on top, and together they stay under
+`llm.synthesis_budget_tokens` (64000), the largest prompt raida sends. "Read full text" answers
+use that same budget and condense sources above it. The server
 must hold `budget + output reserve + overhead` tokens (74240 by default): Ollama is asked for
 that `num_ctx`, and `make llm` starts llama-server with 81920 (`RAIDA_LLAMA_CTX`). Raise the
 budgets only after `make bench` shows acceptable prefill time at that size and you have checked

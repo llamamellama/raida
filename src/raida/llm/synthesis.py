@@ -58,6 +58,10 @@ SCRIPT_SAMPLE_CHARS = 1_500  # per source, to tell the script of the sources
 UNKNOWN = "?"
 
 
+class ConversationTooLongError(LlmError):
+    """The session's conversation, which is never cut, no longer fits the largest prompt."""
+
+
 @dataclass
 class SynthesisResult:
     strategy: Strategy
@@ -102,36 +106,43 @@ class Synthesizer:
             think=think,
         )
 
-    def _history_messages(self, history: list[Message]) -> list[dict[str, str]]:
-        """Most recent completed turns that fit the history budget, oldest first."""
-        budget = self.config.llm.history_budget_tokens
-        selected: list[dict[str, str]] = []
-        used = 0
-        for msg in reversed(history):
-            if msg.status not in ("done",) and msg.role == "assistant":
-                continue
-            if not msg.content.strip():
-                continue
-            # An earlier skill run shows as its command and what the skill does, not its prompt.
-            content = (
-                history_text(msg.content, msg.skill)
-                if msg.role == "user" and msg.skill is not None
-                else msg.content
-            )
-            cost = self._tokens(content)
-            if used + cost > budget:
-                break
-            selected.append({"role": msg.role, "content": content})
-            used += cost
-        selected.reverse()
-        return selected
+    def _conversation(self, history: list[Message]) -> list[ChatMessage]:
+        """Every finished question and answer of the session, oldest first, word for word:
+        follow-ups see the whole conversation. A question whose answer failed, was stopped or is
+        still being written is left out, so the model never sees a question without its
+        answer. An earlier skill run shows as its command and what the skill does."""
+        turns: list[ChatMessage] = []
+        asked: Message | None = None
+        # A question and its answer share a timestamp; put the question first.
+        for msg in sorted(history, key=lambda m: (m.created_at, m.role != "user")):
+            if msg.role == "user":
+                asked = msg
+            elif asked is not None and msg.status == "done" and msg.content.strip():
+                question = (
+                    history_text(asked.content, asked.skill)
+                    if asked.skill is not None
+                    else asked.content
+                )
+                turns.append({"role": "user", "content": question})
+                turns.append({"role": "assistant", "content": msg.content})
+                asked = None
+        return turns
+
+    def _too_long(self, talk: int) -> str:
+        cap = self.config.llm.synthesis_budget_tokens
+        return (
+            f"This session's conversation is about {talk:,} tokens, and with its sources it no "
+            f"longer fits the largest prompt raida sends ({cap:,} tokens). Start a new session to "
+            "continue. To allow longer sessions, raise llm.synthesis_budget_tokens and give the "
+            "model server that much more context."
+        )
 
     def plan(
         self, sources: list[ProcessedSource], instruction: str, history: list[Message]
     ) -> Strategy:
         """Strategy of the full-text path."""
         fixed = self._tokens(prompts.SYSTEM_PROMPT) + self._tokens(instruction)
-        fixed += sum(self._tokens(m["content"]) for m in self._history_messages(history))
+        fixed += sum(self._tokens(m["content"]) for m in self._conversation(history))
         total = fixed + sum(s.token_estimate for s in sources)
         return "single_shot" if total <= self.config.llm.synthesis_budget_tokens else "map_reduce"
 
@@ -145,41 +156,47 @@ class Synthesizer:
         instruction: str = "",
     ) -> FastPlan | None:
         """Prompt prefix for the fast path, or None when it does not apply: a long source has
-        no notes, or even overviews of every source exceed the synthesis budget. When the notes
-        do not fit, the oldest turns of the conversation give way first, then sources fall back
-        to their overviews."""
+        no notes, or even the overviews of every source exceed llm.synthesis_budget_tokens.
+
+        The sources take at most llm.interactive_budget_tokens, chosen without the
+        conversation: they stay the same all session, so each answer only adds to a prompt the
+        server has cached. The whole conversation comes on top, up to the largest prompt,
+        llm.synthesis_budget_tokens. When it does not fit, the sources least related to the
+        question give way to their overviews; the conversation itself is never cut
+        (ConversationTooLongError when even that is not enough)."""
         cfg = self.config
-        history_msgs = self._history_messages(history)
-        fixed = (
-            self._tokens(prompts.SYSTEM_PROMPT)
-            + sum(self._tokens(m["content"]) for m in history_msgs)
-            + max(INSTRUCTION_ALLOWANCE, self._tokens(instruction))
+        conversation = self._conversation(history)
+        talk = sum(self._tokens(m["content"]) for m in conversation)
+        cap = cfg.llm.synthesis_budget_tokens
+        fixed = self._tokens(prompts.SYSTEM_PROMPT) + max(
+            INSTRUCTION_ALLOWANCE, self._tokens(instruction)
         )
         full_total = fixed + sum(s.token_estimate for s in sources)
-        forms: dict[str, str] = {}
-        if full_total <= cfg.llm.interactive_budget_tokens or not sources:
+        forms: dict[str, str] = {s.source_id: "full" for s in sources}
+        if not sources or (
+            full_total <= cfg.llm.interactive_budget_tokens and full_total + talk <= cap
+        ):
             strategy: Strategy = "single_shot"
-            forms = {s.source_id: "full" for s in sources}
+            if full_total + talk > cap:
+                raise ConversationTooLongError(self._too_long(talk))
         else:
             strategy = "notes"
             fixed += cfg.llm.passage_budget_tokens
             for source in sources:
                 if source.source_id in notes:
                     forms[source.source_id] = "notes"
-                elif source.token_estimate < cfg.notes.min_source_tokens:
-                    forms[source.source_id] = "full"
-                else:
+                elif source.token_estimate >= cfg.notes.min_source_tokens:
                     return None
-            content = self._form_tokens(sources, notes, forms)
-            budget = cfg.llm.interactive_budget_tokens
-            while history_msgs and fixed + content > budget:
-                # Drop a whole turn: the history must not start with an answer.
-                fixed -= self._tokens(history_msgs.pop(0)["content"])
-                while history_msgs and history_msgs[0]["role"] != "user":
-                    fixed -= self._tokens(history_msgs.pop(0)["content"])
-            self._fit_forms(sources, notes, forms, fixed, instruction)
-            if fixed + self._form_tokens(sources, notes, forms) > cfg.llm.synthesis_budget_tokens:
-                return None
+            self._fit_forms(
+                sources, notes, forms, fixed, instruction, cfg.llm.interactive_budget_tokens
+            )
+            if fixed + self._form_tokens(sources, notes, forms) + talk > cap:
+                self._fit_forms(sources, notes, forms, fixed + talk, instruction, cap)
+            used = fixed + self._form_tokens(sources, notes, forms)
+            if used > cap:
+                return None  # too many sources even as overviews: the full-text path condenses
+            if used + talk > cap:
+                raise ConversationTooLongError(self._too_long(talk))
         blocks: list[str] = []
         searchable: list[tuple[int, ProcessedSource]] = []
         for index, source in enumerate(sources, start=1):
@@ -195,7 +212,7 @@ class Synthesizer:
         if blocks:
             prefix.append({"role": "user", "content": prompts.blocks_message(blocks)})
             prefix.append({"role": "assistant", "content": ACK})
-        prefix.extend(history_msgs)
+        prefix.extend(conversation)
         return FastPlan(strategy=strategy, prefix=prefix, searchable=searchable, forms=forms)
 
     def _form_tokens(
@@ -219,10 +236,10 @@ class Synthesizer:
         forms: dict[str, str],
         fixed: int,
         instruction: str,
+        budget: int,
     ) -> None:
-        """Replace notes with overviews until the prompt fits the interactive budget: the least
-        relevant sources to the instruction first, or the largest notes first without one."""
-        budget = self.config.llm.interactive_budget_tokens
+        """Replace notes with overviews until the prompt fits ``budget``: the least relevant
+        sources to the instruction first, or the largest notes first without one."""
         if fixed + self._form_tokens(sources, notes, forms) <= budget:
             return
         with_notes = [s for s in sources if forms[s.source_id] == "notes"]
@@ -351,8 +368,9 @@ class Synthesizer:
         if prompt_tokens > room:
             raise LlmError(
                 f"The prompt is about {prompt_tokens} tokens but the context window leaves room "
-                f"for {room}. Raise llm.synthesis_budget_tokens (and check the model's context "
-                "length), or remove sources from this session."
+                f"for {room}. Remove sources from this session, start a new session if its "
+                "conversation has grown long, or raise llm.synthesis_budget_tokens (and check "
+                "the model's context length)."
             )
         if read_ahead:
             await progress("The sources were read ahead; reading the question")
@@ -432,9 +450,16 @@ class Synthesizer:
     ) -> SynthesisResult:
         strategy = self.plan(sources, instruction, history)
         log.info("synthesis_plan", extra={"strategy": strategy, "sources": len(sources)})
+        conversation = self._conversation(history)
         if strategy == "map_reduce":
+            # Condense the sources into what the whole conversation leaves of the largest prompt.
+            talk = sum(self._tokens(m["content"]) for m in conversation)
+            asked = self._tokens(instruction)
+            floor = self._per_source_floor(len(sources))
+            if floor + asked + talk > self.config.llm.synthesis_budget_tokens >= floor + asked:
+                raise ConversationTooLongError(self._too_long(talk))
             await progress("Condensing long sources before writing")
-            sources = await self._condense_sources(instruction, sources, progress)
+            sources = await self._condense_sources(instruction, sources, progress, talk + asked)
         messages: list[ChatMessage] = [{"role": "system", "content": prompts.SYSTEM_PROMPT}]
         if sources:
             messages.append(
@@ -444,22 +469,35 @@ class Synthesizer:
                 }
             )
             messages.append({"role": "assistant", "content": ACK})
-        messages.extend(self._history_messages(history))
+        messages.extend(conversation)
         messages.append({"role": "user", "content": _with_directive(instruction, script)})
         usage = await self._stream(messages, emit, progress, script.target, think_override=think)
         return SynthesisResult(
             strategy=strategy, usage=self._usage_dict(usage), script=script.target
         )
 
-    def _per_source_budget(self, count: int) -> int:
+    def _per_source_budget(self, count: int, reserved: int = 0) -> int:
+        """Tokens each condensed source may take, after the system prompt and ``reserved``
+        (the conversation and the instruction)."""
         cfg = self.config.llm
-        available = cfg.synthesis_budget_tokens - self._tokens(prompts.SYSTEM_PROMPT) - 1500
+        available = (
+            cfg.synthesis_budget_tokens - self._tokens(prompts.SYSTEM_PROMPT) - 1500 - reserved
+        )
         return max(cfg.condensation_target_tokens, available // max(1, count))
 
+    def _per_source_floor(self, count: int) -> int:
+        """The smallest prompt condensing can reach: every source at its condensation target."""
+        cfg = self.config.llm
+        return self._tokens(prompts.SYSTEM_PROMPT) + 1500 + count * cfg.condensation_target_tokens
+
     async def _condense_sources(
-        self, instruction: str, sources: list[ProcessedSource], progress: Progress
+        self,
+        instruction: str,
+        sources: list[ProcessedSource],
+        progress: Progress,
+        reserved: int = 0,
     ) -> list[ProcessedSource]:
-        per_source = self._per_source_budget(len(sources))
+        per_source = self._per_source_budget(len(sources), reserved)
         out: list[ProcessedSource] = []
         for source in sources:
             if source.token_estimate <= per_source:

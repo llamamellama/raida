@@ -488,14 +488,13 @@ def _long_transcript(paragraphs: int = 60) -> bytes:
 def _notes_config(tmp_path: Path, **extra: str):
     from tests.conftest import make_config
 
-    return make_config(
-        tmp_path,
-        RAIDA_NOTES__MIN_SOURCE_TOKENS="1000",
-        RAIDA_NOTES__SECTION_TOKENS="1500",
-        RAIDA_LLM__INTERACTIVE_BUDGET_TOKENS="4000",
-        RAIDA_LLM__PASSAGE_BUDGET_TOKENS="500",
-        **extra,
-    )
+    settings = {
+        "RAIDA_NOTES__MIN_SOURCE_TOKENS": "1000",
+        "RAIDA_NOTES__SECTION_TOKENS": "1500",
+        "RAIDA_LLM__INTERACTIVE_BUDGET_TOKENS": "4000",
+        "RAIDA_LLM__PASSAGE_BUDGET_TOKENS": "500",
+    }
+    return make_config(tmp_path, **{**settings, **extra})
 
 
 async def test_long_source_is_noted_once_and_answered_from_notes(tmp_path: Path) -> None:
@@ -559,6 +558,51 @@ async def test_long_source_is_noted_once_and_answered_from_notes(tmp_path: Path)
             await asyncio.sleep(0.02)
         assert fake.prefills[-1][-2]["role"] == "assistant"
         assert fake.prefills[-1][-2]["content"] == done["content"]
+
+
+async def test_follow_ups_see_every_earlier_question_and_answer(tmp_path: Path) -> None:
+    """The notes alone overflow the sources' share here, which once pushed the conversation
+    out of the prompt: a follow-up then reached the model without the answer it followed."""
+    from raida.api.app import create_app
+
+    app = create_app(_notes_config(tmp_path, RAIDA_LLM__INTERACTIVE_BUDGET_TOKENS="2000"))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
+    ):
+        fake = app.state.raida.scheduler.llm
+        sid = await _session(client)
+        r = await client.post(
+            f"/api/sessions/{sid}/sources", files=[("files", ("talk.md", _long_transcript()))]
+        )
+        assert (await wait_for(client, f"/api/sources/{r.json()[0]['id']}", TERMINAL))[
+            "status"
+        ] == "ready"
+
+        def answer_prompt() -> list[dict[str, str]]:
+            return next(c for c in reversed(fake.calls) if c[0]["content"].startswith("You are"))
+
+        said: list[str] = []
+        for question, full_text in (
+            ("What is said about topic 3?", False),
+            ("Make it shorter.", False),
+            ("Now as three bullet points.", False),
+            ("Quote the part about topic 3 word for word.", True),
+        ):
+            m = await client.post(
+                f"/api/sessions/{sid}/messages", json={"content": question, "full_text": full_text}
+            )
+            done = await wait_for(
+                client, f"/api/messages/{m.json()['id']}", {"done", "failed", "cancelled"}
+            )
+            assert done["status"] == "done", done
+            prompt = answer_prompt()
+            # Everything before this question, in order, between the sources and the question.
+            assert [c["content"] for c in prompt[3:-1]] == said, question
+            said += [question, done["content"]]
+        assert done["strategy"] == "single_shot" and len(said) == 8
 
 
 async def test_long_source_without_notes_is_read_in_full(tmp_path: Path) -> None:

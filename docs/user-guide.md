@@ -164,7 +164,10 @@ while to appear: the model thinks first (the line under the answer counts its th
 and raida shows only the final answer. With "Read full text", inputs larger than the model's
 context budget are condensed source by source first, which shows as a "Condensing" stage.
 
-You can keep the conversation going: follow-up instructions see the earlier answers.
+You can keep the conversation going. Every earlier question and answer in the session goes to
+the model with each new instruction, so follow-ups such as "make it shorter" or "explain the
+second step" work. A very long session eventually no longer fits the model; the answer then
+says so, and you continue in a new session.
 
 ### Skills: save an instruction and reuse it
 

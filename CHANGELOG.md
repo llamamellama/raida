@@ -57,8 +57,13 @@ minor version can change behavior; upgrade notes say when you need to do somethi
   that uses it. Earlier results stay cached, so switching back is immediate.
 - The sidebar has Sources and Skills tabs, the top-left corner reads "Raida", the status chips
   are compact, and the layout works at laptop and phone widths.
-- When the notes of a session's sources do not fit the prompt, old conversation turns are dropped
-  before a long source is cut to its overview.
+- Every earlier question and answer in a session goes to the model with each new instruction,
+  word for word, so follow-ups such as "make it shorter" work. A question whose answer failed or
+  was stopped is left out. The sources keep their share of the prompt
+  (`llm.interactive_budget_tokens`, now the sources' share only). The conversation comes on top,
+  up to `llm.synthesis_budget_tokens`; past that, the sources least related to the question are
+  shortened to their overviews, and the conversation is never cut. A session that outgrows the
+  model says so and asks you to continue in a new one.
 - A question asked while its session's sources are being read into the model's cache waits for
   that read instead of cancelling it, which could re-read the whole prompt (134 s measured).
 - The app serves the UI files it started with; restart it to pick up edits to `src/raida/web`.
@@ -75,9 +80,14 @@ minor version can change behavior; upgrade notes say when you need to do somethi
 
 - The "From library" dialog, replaced by the library list in the Sources tab, and
   `POST /api/sessions/{id}/sources/from-library`, replaced by `PUT` on the same resource.
+- The `llm.history_budget_tokens` setting: the whole conversation is sent. A `raida.toml` that
+  still sets it stops at startup and names the key to remove.
 
 ### Fixed
 
+- Follow-ups could reach the model without the conversation they followed. When a session's
+  notes nearly filled the prompt, as with five two-hour recordings, earlier turns were dropped,
+  sometimes all of them. Older turns were also dropped past 6,000 tokens of conversation.
 - Source cards were wider than the sidebar and cut off names and buttons.
 - The status strip was redrawn on every streamed word of an answer.
 - The last lines of `scripts/setup-mac.sh` ran `make ollama` and `make llm` instead of printing

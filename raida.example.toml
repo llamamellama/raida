@@ -7,9 +7,9 @@ log_level = "INFO"
 backend = "llama_server"             # "llama_server" (recommended) | "ollama" | "openai_compatible" | "fake"
 base_url = "http://127.0.0.1:8080"   # llama-server (make llm); Ollama: http://127.0.0.1:11434; LM Studio: http://127.0.0.1:1234
 model = "gpt-oss:120b"               # REQUIRED. For llama-server, the --alias it was started with (make llm uses the Ollama tag)
-interactive_budget_tokens = 32000    # normal answers: long sources through their notes, short ones in full
+interactive_budget_tokens = 32000    # the sources' share of a normal answer (notes of long ones); the conversation comes on top
 passage_budget_tokens = 2000         # verbatim passages found for each question, on top of the notes; 0 = off
-synthesis_budget_tokens = 64000      # "Read full text" answers; above this the sources are condensed first
+synthesis_budget_tokens = 64000      # largest prompt: sources plus the whole conversation; "Read full text" condenses above it
 output_reserve_tokens = 8192
 keep_alive = "1h"                    # Ollama only; llama-server unloads after RAIDA_LLAMA_IDLE_S
 request_timeout_s = 3600             # the server is silent while it reads a long prompt; cover the slowest prefill

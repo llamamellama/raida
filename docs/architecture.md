@@ -100,20 +100,27 @@ state changes as `source.updated`.
 
 Fast path (default). `Synthesizer.plan_fast` builds a prompt prefix that does not depend on the
 question: the system prompt, one `<source>` block per ready source, an acknowledgement, and the
-most recent history that fits `llm.history_budget_tokens`. When every source fits
-`llm.interactive_budget_tokens` in full, all go in full (`single_shot`). Otherwise short sources
-go in full and long ones as their notes (`notes`); if the notes do not fit, the least relevant
-sources (BM25 of the instruction against their notes) fall back to their overviews. The final
+whole conversation: every finished question and answer of the session, word for word (ADR-0010).
+The sources take at most `llm.interactive_budget_tokens`, chosen without the conversation, so
+they stay the same all session and each answer only adds to a cached prefix. When every source
+fits in full, all go in full (`single_shot`). Otherwise short sources go in full and long ones
+as their notes (`notes`); if the notes do not fit, the least relevant sources (BM25 of the
+instruction against their notes) fall back to their overviews. The conversation comes on top, up
+to `llm.synthesis_budget_tokens`; past that more sources fall back to overviews, and when even
+that is not enough the question fails with a message to start a new session. The conversation
+itself is never cut. A question whose answer failed or was stopped is left out. The final
 user turn carries verbatim passages from the full text of the noted sources, selected with BM25
 over paragraphs (character bigrams for CJK) within `llm.passage_budget_tokens`, then the
 instruction. A long source without notes sends the message down the full-text path.
 
 Full-text path ("Read full text", `full_text` on the message). The sum of the full sources, the
-instruction, the system prompt and history is compared with `llm.synthesis_budget_tokens`. If
+instruction, the system prompt and the whole conversation is compared with
+`llm.synthesis_budget_tokens`. If
 it fits, every source goes in verbatim (`single_shot`). Otherwise each oversized source is split
 on headings and paragraphs into `llm.map_chunk_tokens` chunks, each chunk is condensed with the
 instruction in view while keeping anchors, and notes are merged hierarchically until the source
-fits its share (`map_reduce`). Intermediates are cached so re-asking is cheap.
+fits its share of what the conversation leaves (`map_reduce`). Intermediates are cached so
+re-asking is cheap.
 
 In both paths the final call streams; deltas are appended to the message row and published as
 `message.delta`. The answer follows the instruction's language (system prompt). For Chinese,
@@ -141,8 +148,7 @@ main language of the sources weighted by length, or a set language), its think o
 reasoning off, and its full-text option takes the full-text path. In later history a skill run
 appears as its command and one line of description.
 
-When notes do not fit `llm.interactive_budget_tokens`, the oldest conversation turns are
-dropped before any source falls back to its overview. A question whose session is being read
+A question whose session is being read
 ahead waits for that read instead of cancelling it: cancelling made the question land on
 another server slot and re-read the whole prefix.
 

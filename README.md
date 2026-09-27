@@ -18,6 +18,8 @@ The model, speech-to-text and OCR all run on the Mac; nothing is uploaded.
 - **Quick answers over long recordings:** answers read the notes of long sources plus the
   passages that match the question, and each session's sources are read into the model's cache
   before you ask. "Read full text" reads every word when a question needs it.
+- **Real follow-ups:** every earlier question and answer in a session goes to the model with each
+  new instruction, so "make it shorter" or "explain the second step" works.
 - **Answers in your language:** the answer follows the language of the instruction. Chinese
   answers keep the script you write in, Traditional or Simplified, with Taiwan or Hong Kong usage
   taken from the sources.

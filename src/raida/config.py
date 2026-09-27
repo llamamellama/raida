@@ -45,14 +45,16 @@ class LlmConfig(StrictModel):
     base_url: str = "http://127.0.0.1:11434"
     model: str = Field(min_length=1, description="Model name as known to the local server.")
     api_key: str = "raida-local"
-    # Largest prompt for an answer that reads the full text of the sources ("Read full text");
-    # above it the sources are condensed for the instruction first (map-reduce).
+    # Largest prompt raida sends. An answer that reads the full text of the sources ("Read
+    # full text") condenses them for the instruction above it (map-reduce); a normal answer's
+    # sources and the session's whole conversation must fit in it together.
     synthesis_budget_tokens: int = Field(default=64_000, ge=4_000)
-    # Largest prompt for a normal answer, which reads each long source's notes. Reading a prompt
-    # costs time that grows faster than its length (about 30 s for 16k tokens, 100 s for 32k
-    # and 14 minutes for 100k with a 30B model on an M2 Max). Sessions are read ahead when
-    # opened, so this is paid before the question on a server with a prompt cache. Notes of
-    # four two-hour recordings take about 19k tokens.
+    # The sources' share of a normal answer's prompt: short sources in full, long ones through
+    # their notes. The conversation comes on top of it. Reading a prompt costs time that grows
+    # faster than its length (about 30 s for 16k tokens, 100 s for 32k and 14 minutes for 100k
+    # with a 30B model on an M2 Max). Sessions are read ahead when opened, so this is paid
+    # before the question on a server with a prompt cache. Notes of four two-hour recordings
+    # take about 19k tokens.
     interactive_budget_tokens: int = Field(default=32_000, ge=2_000)
     # Verbatim passages found for each question in long sources, on top of their notes; 0 = off.
     passage_budget_tokens: int = Field(default=2_000, ge=0)
@@ -60,7 +62,6 @@ class LlmConfig(StrictModel):
     prompt_overhead_tokens: int = Field(default=2_048, ge=256)
     condensation_target_tokens: int = Field(default=6_000, ge=500)
     map_chunk_tokens: int = Field(default=24_000, ge=2_000)
-    history_budget_tokens: int = Field(default=6_000, ge=0)
     keep_alive: str = "1h"
     # Ollama sends nothing until the prompt is read; 100k tokens of Chinese took over 15 minutes
     # on an M2 Max, so the read timeout must cover the whole prefill of the largest prompt.
