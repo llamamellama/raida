@@ -16,6 +16,7 @@ export function createStore() {
     health: null,
     skills: [],            // SkillInfo list, replaced as a whole on every change
     skillProblems: [],
+    deletedBuiltins: [],   // names of built-in skills the user deleted
   };
   const notify = () => listeners.forEach((fn) => fn(state));
   return {
@@ -68,7 +69,11 @@ export function createStore() {
         case "artifact.created": state.artifacts.set(data.id, data); break;
         case "session.updated": state.session = data; break;
         case "system.status": state.health = data; break;
-        case "skills.updated": state.skills = data.skills; state.skillProblems = data.problems || []; break;
+        case "skills.updated":
+          state.skills = data.skills;
+          state.skillProblems = data.problems || [];
+          state.deletedBuiltins = data.deleted_builtins || [];
+          break;
         default: return;
       }
       notify();

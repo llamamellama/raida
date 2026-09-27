@@ -188,8 +188,10 @@ tab in the sidebar lists them all, and every session can run any of them.
   may be in another language. Choose the answer language (same as the instructions, same as the
   sources, or a fixed one). "Think before answering" gives better structure; switch it off for
   quick jobs, and the answer starts at once.
-- **Change a built-in one:** Edit it and save; the list shows "built-in, changed". Reset brings
-  the original back.
+- **Change or remove a built-in one:** Edit it and save; the list shows "built-in, changed",
+  and Reset brings the original back. Delete takes any skill out of the list and the `@` menu,
+  built-in ones included; Restore, at the bottom of the Skills tab, brings deleted built-in
+  skills back.
 - **Share:** Export downloads a .zip; Import takes a .zip, .skill or SKILL.md, including skills
   made for Claude, ChatGPT or Gemini. raida uses only their text and never runs anything in
   them.
@@ -214,7 +216,17 @@ from the library.
 ## 5. Where your data lives
 
 Everything is in `~/Library/Application Support/raida`: uploads, extracted text, transcripts,
-notes, exports, your skills (the `skills` folder, one folder per skill) and a small database. Deleting that folder resets raida. `raida doctor` prints the path.
+notes, exports, your skills (the `skills` folder, one folder per skill), the downloaded
+speech-to-text models (`models`) and a small database. `raida doctor` and Settings show the
+path.
+
+To start over, open **Settings** (the last button in the top bar) and choose **Nuke** in its
+Danger zone. After you type NUKE to confirm, it stops all work and deletes every session, every
+library file with its transcript and notes, all exports, your skills and changes to the built-in
+ones, and the database backups: Raida is back to factory settings. It keeps `raida.toml`, the
+downloaded speech-to-text models, the model server and its models, and the files you added by
+path. It cannot be undone. Use it rather than deleting the folder yourself, which would also
+delete the models.
 
 ## 6. Changing the model or settings
 
@@ -264,6 +276,7 @@ Options, in order of preference:
 | A long source says "No notes" | The model server was not running when it was added. It still works, more slowly. Click Re-run, or restart the app: missing notes are taken in the background |
 | An answer from notes misses a detail | Ask again with "Read full text" ticked, or use the words spoken in the recording, which the passage search matches |
 | The browser cannot connect | `make dev` is not running, or the port is taken; check Window 2 |
+| The browser shows "raida only answers requests addressed to this Mac" | Open `http://127.0.0.1:8765` or `http://localhost:8765`. Raida has no login, so it refuses any other address, such as the Mac's network name |
 | A recording fails with "needs a language and language detection is off" | Pick the language on the source card, or under "Language for new sources" before adding media. The source re-runs on its own |
 | A recording fails with "Downloading required assets" and `CancellationError` | This Mac has no Apple recognition assets for that language and could not fetch them. Add it under System Settings > Keyboard > Dictation, or pick an installed language. raida already retries the transient form of this error |
 | Chinese transcript comes out in the wrong script | Pick "Chinese (Traditional)" for Traditional characters, "Chinese (Simplified)" for Simplified, or "Cantonese (Hong Kong)". Changing the language on a source re-transcribes it |

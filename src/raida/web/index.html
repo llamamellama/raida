@@ -20,6 +20,7 @@
     <button id="delete-session" class="btn btn-quiet btn-danger" type="button" title="Delete session">Delete</button>
   </div>
   <div id="status-strip" class="status-strip" aria-live="polite"></div>
+  <button id="open-settings" class="btn btn-quiet btn-sm" type="button" title="Version, data folder, and resetting Raida">Settings</button>
 </header>
 
 <main class="layout">
@@ -71,6 +72,7 @@
       <p class="section-note">Saved instructions for every session. Type <code>@</code> at the start of the instruction box to run one, such as <code>@summary focus on the budget</code>.</p>
       <pre id="skills-problems" class="source-error skills-problems" hidden></pre>
       <div id="skills-list" class="skills-list panel-scroll"></div>
+      <div id="skills-restore" class="skills-restore" hidden></div>
       <input id="skill-import-file" type="file" accept=".md,.zip,.skill" hidden>
     </section>
   </aside>
@@ -146,6 +148,50 @@
     <div class="dialog-actions">
       <button class="btn btn-quiet" type="button" id="skill-cancel">Cancel</button>
       <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="settings-dialog" class="dialog">
+  <div class="dialog-head">
+    <h3>Settings</h3>
+    <button class="btn btn-quiet" type="button" id="settings-close">Close</button>
+  </div>
+  <p class="muted">Raida's settings are in <code>raida.toml</code> in the raida folder; restart Raida after changing them.</p>
+  <dl class="settings-facts">
+    <dt>Version</dt><dd id="settings-version"></dd>
+    <dt>Model</dt><dd id="settings-model"></dd>
+    <dt>Data folder</dt><dd id="settings-data-dir"></dd>
+  </dl>
+  <section class="danger-zone" aria-labelledby="danger-zone-title">
+    <h4 id="danger-zone-title">Danger zone</h4>
+    <div class="danger-row">
+      <div>
+        <strong>Nuke</strong>
+        <p class="muted">Delete every session, library file, answer, export and skill, and return Raida to factory settings.</p>
+      </div>
+      <button id="nuke-open" class="btn btn-danger-solid" type="button">Nuke...</button>
+    </div>
+  </section>
+</dialog>
+
+<dialog id="nuke-dialog" class="dialog">
+  <form id="nuke-form" class="nuke-form" novalidate>
+    <h3>Nuke Raida?</h3>
+    <p>This deletes everything you made in Raida and returns it to factory settings:</p>
+    <ul class="nuke-list">
+      <li>every session, with its conversation and exports</li>
+      <li>every file in the library, with its transcript and notes</li>
+      <li>your skills and your changes to the built-in ones; deleted built-in skills come back</li>
+      <li>the database backups in the data folder</li>
+    </ul>
+    <p class="muted">Kept: <code>raida.toml</code>, the downloaded speech-to-text models, the model server and its models, and files you added by path, which stay where they are. Work in progress stops.</p>
+    <p><strong>This cannot be undone.</strong></p>
+    <label class="nuke-confirm">Type NUKE to confirm<input id="nuke-input" autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+    <p id="nuke-error" class="message-error" hidden></p>
+    <div class="dialog-actions">
+      <button class="btn btn-quiet" type="button" id="nuke-cancel">Cancel</button>
+      <button class="btn btn-danger-solid" type="submit" id="nuke-confirm" disabled>Nuke</button>
     </div>
   </form>
 </dialog>

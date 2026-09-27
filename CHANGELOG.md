@@ -20,6 +20,13 @@ minor version can change behavior; upgrade notes say when you need to do somethi
   skill later does not change past answers.
 - A Skills tab in the sidebar lists every skill and creates, edits, duplicates, imports and
   exports them. An edited built-in skill can be reset to the original.
+- Built-in skills can be deleted like your own, with any changes to them. Restore, at the
+  bottom of the Skills tab, brings them back.
+- Nuke, in the new Settings dialog (last button in the top bar), returns Raida to factory
+  settings. It stops all work and deletes every session, library file, answer, export, skill
+  and database backup. It keeps `raida.toml`, the downloaded speech-to-text models and files
+  added by path. It sits in a Danger zone and asks you to type NUKE before it runs. Every open
+  tab reloads afterwards. Settings also shows the version, the model and the data folder.
 - Skills use the Agent Skills format (a folder with `SKILL.md`), so skills made for Claude,
   ChatGPT, Codex, Gemini CLI or Cursor import (`.zip`, `.skill` or `SKILL.md`) and raida's
   exports load there. raida uses only their text and never runs code from a skill.
@@ -60,6 +67,9 @@ minor version can change behavior; upgrade notes say when you need to do somethi
 - API: `GET /api/library` lists the library; `PUT` and `DELETE /api/sessions/{id}/sources/{source_id}`
   add a library file to a session or remove it; `DELETE /api/sources/{id}` deletes a file from
   the library; `PATCH /api/sources/{id}` also sets the title; new `/api/skills` routes.
+  `DELETE /api/skills/{name}` deletes built-in skills too, and discarding changes to one is
+  `POST /api/skills/{name}/reset`. `POST /api/skills/restore-builtins` and
+  `POST /api/reset` (with `{"confirm": "NUKE"}`) are new, as is the `app.reset` event.
 
 ### Removed
 
@@ -74,11 +84,19 @@ minor version can change behavior; upgrade notes say when you need to do somethi
   them.
 - `make bench` failed after timing the model, because timing transcription needs a recording;
   `make bench MEDIA=<file>` now times both.
+- A changed built-in skill whose file could not be read showed as unchanged, with no Reset,
+  and could not be saved or deleted. It now shows as changed, so Reset, Delete and saving from
+  the editor repair it. Exporting such a skill shows the reason instead of replacing the page
+  with an error.
 
 ### Security
 
 - A small `SKILL.md` with nested YAML aliases could expand to gigabytes of memory. raida now
   refuses YAML aliases and caps the size of the frontmatter.
+- A web page from anywhere could read your library and transcripts through raida while it ran,
+  by pointing its own host name at 127.0.0.1 (DNS rebinding). raida now answers only requests
+  addressed to this Mac (`127.0.0.1`, `localhost`, `::1` or `server.host`). It also refuses any
+  change sent by another site's page. Opening raida by the Mac's network name no longer works.
 
 ### Upgrade notes
 

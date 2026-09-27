@@ -112,8 +112,11 @@ export function initSkills(store, els) {
         s.full_text ? "reads full text" : null,
         s.think ? null : "no thinking first",
       ].filter(Boolean).join(" · ");
-      const remove = s.origin === "user" ? `<button class="btn btn-sm btn-quiet btn-danger push" type="button" data-act="delete">Delete</button>`
-        : s.origin === "override" ? `<button class="btn btn-sm btn-quiet push" type="button" data-act="reset">Reset</button>` : "";
+      // Every skill can be deleted, built-in ones too; a changed built-in one can also be reset.
+      const remove = s.origin === "override"
+        ? `<button class="btn btn-sm btn-quiet push" type="button" data-act="reset" title="Discard your changes and bring back the built-in version">Reset</button>
+          <button class="btn btn-sm btn-quiet btn-danger" type="button" data-act="delete">Delete</button>`
+        : `<button class="btn btn-sm btn-quiet btn-danger push" type="button" data-act="delete">Delete</button>`;
       return `<div class="skill-item" data-name="${escapeAttr(s.name)}">
         <div class="skill-item-head"><span class="skill-item-title">${escapeHtml(s.title)}</span>
           <span class="pill">${ORIGIN_LABELS[s.origin] || s.origin}</span></div>
@@ -131,7 +134,22 @@ export function initSkills(store, els) {
     const problems = state.skillProblems || [];
     els.skillsProblems.hidden = !problems.length;
     els.skillsProblems.textContent = problems.map((p) => `Could not read ${p.path}: ${p.error}`).join("\n");
+    const deleted = state.deletedBuiltins || [];
+    els.skillsRestore.hidden = !deleted.length;
+    els.skillsRestore.innerHTML = deleted.length
+      ? `<span class="muted">Deleted built-in skills: ${deleted.map((n) => `<code>@${escapeHtml(n)}</code>`).join(", ")}</span>
+        <button class="btn btn-sm btn-quiet" type="button" data-act="restore">Restore</button>`
+      : "";
   }
+
+  els.skillsRestore.addEventListener("click", async (e) => {
+    if (!e.target.closest('[data-act="restore"]')) return;
+    try {
+      const listing = await api.restoreBuiltins();
+      store.apply("skills.updated", listing);
+      toast("The built-in skills are back");
+    } catch (err) { toast(err.message, true); }
+  });
 
   els.skillsList.addEventListener("click", async (e) => {
     const button = e.target.closest("[data-act]");
@@ -147,14 +165,18 @@ export function initSkills(store, els) {
       } else if (act === "duplicate") {
         openEditor(await api.getSkill(name), true);
       } else if (act === "export") {
-        window.location.assign(`/api/skills/${encodeURIComponent(name)}/export`);
+        await api.exportSkill(name);
       } else if (act === "delete") {
-        if (!confirm(`Delete the skill @${name}? Answers it already wrote stay.`)) return;
+        const skill = find(name);
+        const question = skill && skill.origin !== "user"
+          ? `Delete the built-in skill @${name}${skill.origin === "override" ? " and your changes to it" : ""}? Answers it already wrote stay, and Restore at the bottom of the Skills tab brings built-in skills back.`
+          : `Delete the skill @${name}? Answers it already wrote stay.`;
+        if (!confirm(question)) return;
         await api.deleteSkill(name);
         toast(`Deleted @${name}`);
       } else if (act === "reset") {
         if (!confirm(`Discard your changes to @${name} and bring back the built-in version?`)) return;
-        await api.deleteSkill(name);
+        await api.resetSkill(name);
         toast(`@${name} is back to the built-in version`);
       }
     } catch (err) { toast(err.message, true); }

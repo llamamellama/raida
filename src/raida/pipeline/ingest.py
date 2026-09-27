@@ -128,6 +128,37 @@ def discard_upload(config: Config, path: Path, kept: Source) -> None:
         path.parent.rmdir()
 
 
+def user_data_dirs(config: Config) -> list[Path]:
+    """The folders of the data directory that hold what the user made, which a factory reset
+    deletes: uploaded copies, decoded audio, processed text, exports, skills, and database
+    backups. Named one by one, so a data directory pointed at a shared folder loses nothing
+    else; the downloaded models (models/) are kept, since they may not download again here."""
+    return [
+        config.uploads_dir,
+        config.media_dir,
+        config.processed_dir,
+        config.artifacts_dir,
+        config.skills_dir,
+        config.paths.data_dir / "backups",
+    ]
+
+
+def remove_user_data(config: Config) -> int:
+    """Delete the user data folders (files added by path live elsewhere and stay) and create
+    them again empty. Returns the bytes freed."""
+    freed = 0
+    for folder in user_data_dirs(config):
+        if folder.is_symlink():
+            folder.unlink()
+            continue
+        if not folder.is_dir():
+            continue
+        freed += sum(p.lstat().st_size for p in folder.rglob("*") if p.is_file())
+        shutil.rmtree(folder)
+    config.ensure_dirs()
+    return freed
+
+
 def remove_file_data(config: Config, source: Source, processed_paths: list[str]) -> None:
     """Delete what raida stored for a file removed from the library: the uploaded copy (never
     a file added by path, which is the user's), the decoded audio and the processed text."""

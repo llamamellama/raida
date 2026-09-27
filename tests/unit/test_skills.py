@@ -179,15 +179,71 @@ def test_builtin_override_and_reset(store: SkillStore) -> None:
     original = store.get("summary")
     with pytest.raises(SkillConflictError):
         store.create(_skill(name="summary"))
-    with pytest.raises(SkillError, match="cannot be deleted"):
-        store.delete("summary")
+    with pytest.raises(SkillError, match="no changes to discard"):
+        store.reset("summary")
     changed = store.update("summary", _skill(name="summary", instructions="Mine."))
     assert changed.origin == "override" and changed.instructions == "Mine."
     with pytest.raises(SkillError, match="keeps its name"):
         store.update("summary", _skill(name="my-summary"))
-    restored = store.delete("summary")
-    assert restored is not None and restored.origin == "builtin"
-    assert restored.instructions == original.instructions
+    restored = store.reset("summary")
+    assert restored.origin == "builtin" and restored.instructions == original.instructions
+    assert not (store.user_dir / "summary").exists()
+
+
+def test_builtin_skills_can_be_deleted_and_restored(store: SkillStore) -> None:
+    store.delete("summary")
+    assert "summary" not in store.names() and store.deleted_builtins() == ["summary"]
+    with pytest.raises(SkillNotFoundError):
+        store.get("summary")
+    with pytest.raises(SkillNotFoundError):
+        store.load("summary")  # so @summary no longer runs
+    with pytest.raises(SkillNotFoundError):
+        store.delete("summary")
+
+    # A changed built-in goes with its changes.
+    store.update("article", _skill(name="article", instructions="Mine."))
+    store.delete("article")
+    assert not (store.user_dir / "article").exists()
+    assert store.deleted_builtins() == ["article", "summary"]
+
+    # The name is free for a skill of the user's own, which the built-in does not hide.
+    mine = store.create(_skill(name="summary", instructions="My own summary."))
+    assert mine.origin == "user" and store.load("summary").instructions == "My own summary."
+
+    assert store.restore_builtins() == ["article", "summary"]
+    assert store.deleted_builtins() == [] and not (store.user_dir / ".deleted-builtins").exists()
+    assert store.get("article").origin == "builtin"
+    assert store.get("summary").origin == "override"  # the user's skill now changes the built-in
+    assert store.restore_builtins() == []
+
+
+def test_a_broken_change_to_a_builtin_can_be_repaired(store: SkillStore) -> None:
+    folder = store.user_dir / "summary"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("---\nname: summary\ndescription: [unclosed\n---\nx", "utf-8")
+    skills, problems = store.list()
+    assert next(s for s in skills if s.name == "summary").origin == "override"
+    assert any("summary" in p.path for p in problems)
+    with pytest.raises(SkillError):
+        store.load("summary")  # running it says what is wrong instead of using the original
+    saved = store.update("summary", _skill(name="summary", instructions="Fixed."))
+    assert saved.origin == "override" and store.load("summary").instructions == "Fixed."
+    (folder / "SKILL.md").write_text("no frontmatter", "utf-8")
+    assert store.reset("summary").origin == "builtin"
+    (folder).mkdir()
+    (folder / "SKILL.md").write_text("no frontmatter", "utf-8")
+    store.delete("summary")
+    assert not folder.exists() and "summary" in store.deleted_builtins()
+
+
+def test_an_unreadable_user_skill_folder_can_be_deleted(store: SkillStore) -> None:
+    folder = store.user_dir / "broken"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("no frontmatter", "utf-8")
+    store.delete("broken")
+    assert not folder.exists() and store.deleted_builtins() == []
+    with pytest.raises(SkillNotFoundError):
+        store.delete("broken")
 
 
 def test_hand_edited_and_broken_folders(store: SkillStore) -> None:

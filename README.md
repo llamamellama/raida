@@ -22,8 +22,11 @@ The model, speech-to-text and OCR all run on the Mac; nothing is uploaded.
   answers keep the script you write in, Traditional or Simplified, with Taiwan or Hong Kong usage
   taken from the sources.
 - **Skills:** save an instruction with an example of the output and reference notes, then run it
-  in any session with `@name`. Five are built in. Skills use the Agent Skills format that Claude,
-  ChatGPT, Codex, Gemini CLI and Cursor also read.
+  in any session with `@name`. Five are built in, and any skill you do not use can be deleted.
+  Skills use the Agent Skills format that Claude, ChatGPT, Codex, Gemini CLI and Cursor also
+  read.
+- **Start over any time:** Nuke, in Settings, deletes everything you made and returns Raida to
+  factory settings, keeping the downloaded models and your settings.
 - **Citations and exports:** answers stream in with page anchors and time codes, and export to
   .txt, .md, .pdf and .docx.
 - **Command line:** process files, ask questions, run skills and export answers from scripts.
@@ -34,10 +37,11 @@ What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 Raida is a local web app. One Python process serves the page at `http://127.0.0.1:8765`,
 processes files in parallel (documents on the CPU, one transcription at a time on the GPU) and
-keeps everything under `~/Library/Application Support/raida`. The language model runs in a
-separate model server on the same Mac: llama.cpp's `llama-server` (recommended), Ollama, or any
-OpenAI-compatible server. Design and decisions: [docs/architecture.md](docs/architecture.md) and
-[docs/adr/](docs/adr/).
+keeps everything under `~/Library/Application Support/raida`. It has no login, so it answers
+only requests addressed to this Mac and refuses changes sent by other websites. The language
+model runs in a separate model server on the same Mac: llama.cpp's `llama-server` (recommended),
+Ollama, or any OpenAI-compatible server. Design and decisions:
+[docs/architecture.md](docs/architecture.md) and [docs/adr/](docs/adr/).
 
 ## Requirements
 
@@ -241,6 +245,7 @@ uv run raida skills [show <name>]                    # list skills, or print one
 | `uv: command not found`, or `which brew` prints `/usr/local/bin/brew` | The Apple Silicon Homebrew is not first on PATH: run the two lines at the end of step 1, or call `/opt/homebrew/bin/uv`. If the first `ffmpeg` on PATH is an Intel build, set `transcribe.ffmpeg_path = "/opt/homebrew/bin/ffmpeg"` |
 | The model is slow and runs partly on the CPU | The model and its context exceed macOS's GPU memory cap. See "GPU memory cap" in [docs/model-setup.md](docs/model-setup.md), or pick a smaller model |
 | PDF export looks plain | `/opt/homebrew/bin/brew install pango`, then start Raida with `make dev` |
+| The page says "raida only answers requests addressed to this Mac" | Open `http://127.0.0.1:8765` or `http://localhost:8765`; other addresses, such as the Mac's network name, are refused |
 
 Problems while using the app: section 8 of [docs/user-guide.md](docs/user-guide.md).
 

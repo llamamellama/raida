@@ -44,7 +44,8 @@ is added, and each session's prompt prefix is read before the question arrives.
   revision hash); the user message also carries `prompt`, the full instruction sent.
 - Skill: a folder, not a table row: `SKILL.md` plus optional `assets/example.md` and
   `references/reference.md` (ADR-0006). Built-in ones ship in the package; a user folder with
-  the same name overrides one.
+  the same name overrides one, and a deleted one is named in `skills/.deleted-builtins` until
+  it is restored (ADR-0008).
 - Artifact: an export of a message (format, path, filename).
 - ProcessedCache: content hash + kind + language + pipeline variant -> processed markdown.
 - Notes: overview plus anchored section notes of one processed document, keyed by processed
@@ -156,13 +157,19 @@ and the whole library, on connect), `app.version` (the hash of the UI files the 
 `system.status`, `source.updated`, `source.removed` and `job.progress` (sent to every tab, since
 any session may list the file), `session.sources` (the ids of the session's sources, in order,
 when that list changes), `message.updated`, `message.delta`, `message.progress`,
-`artifact.created`, `session.updated`, and `skills.updated` (sent to every tab when a skill
-changes). Reconnects resync from the snapshot. Sources: `GET /api/library`; `POST
+`artifact.created`, `session.updated`, `skills.updated` (sent to every tab when a skill
+changes), and `app.reset` (sent to every tab after a factory reset; tabs reload). Reconnects resync from the snapshot. Sources: `GET /api/library`; `POST
 /api/sessions/{id}/sources` (upload) and `.../sources/by-path` put files in the library and the
 session; `PUT` and `DELETE /api/sessions/{id}/sources/{source_id}` add a library file to a
 session or remove it; `GET /api/sources/{id}`, `/text`, `/notes`, `PATCH` (title, language), `/retry`,
 `/cancel`; `DELETE /api/sources/{id}` deletes from the library. Skills: `GET/POST /api/skills`,
-`GET/PUT/DELETE /api/skills/{name}`, `POST /api/skills/import`, `GET /api/skills/{name}/export`.
+`GET/PUT/DELETE /api/skills/{name}` (DELETE works on built-in skills too),
+`POST /api/skills/{name}/reset`, `POST /api/skills/restore-builtins`, `POST /api/skills/import`,
+`GET /api/skills/{name}/export`. `POST /api/reset` with `{"confirm": "NUKE"}` stops all work
+and deletes everything the user made (ADR-0008).
+Every request must be addressed to this machine (Host `127.0.0.1`, `localhost`, `::1` or
+`server.host`), and a POST, PUT, PATCH or DELETE carrying another site's Origin is refused; that
+stops a web page from using raida through DNS rebinding (ADR-0009).
 The server reads the UI files once, when it starts, and serves only those: files edited on disk
 while it runs are served after a restart, together with the server code that matches them (a
 page once got newer scripts than its server and could not list the sessions). The page loads
@@ -191,6 +198,8 @@ library), cache hits, add-by-path rules, waiting-for-sources, notes taken once a
 across sessions, answers from notes with retrieved passages, reading ahead (and a question
 waiting for its session's read-ahead), skills (managing, importing, exporting, running in
 several sessions, options, follow-ups, the CLI), map-reduce, exports, and the SSE stream against
-a live uvicorn server.
+a live uvicorn server, the factory reset (what it deletes and keeps, work in progress
+stopped, every tab told) and the refusal of requests for other host names or from other
+sites.
 Real-model smoke tests are a documented manual step on the Mac (`make bench` and the checklist
 in `docs/model-setup.md`).

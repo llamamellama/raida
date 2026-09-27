@@ -23,6 +23,7 @@ from raida.models import (
     HealthReport,
     Message,
     ProcessedSource,
+    ResetSummary,
     SessionDetail,
     SessionSnapshot,
     Source,
@@ -48,6 +49,10 @@ log = logging.getLogger(__name__)
 PREPARE_WAIT_S = 900.0
 
 
+class ResetInProgressError(RuntimeError):
+    """A factory reset is deleting everything; nothing new starts until it has finished."""
+
+
 class Scheduler:
     def __init__(self, config: Config, db: Database) -> None:
         self.config = config
@@ -64,8 +69,19 @@ class Scheduler:
         self._message_tasks: dict[str, asyncio.Task[None]] = {}
         self._background: set[asyncio.Task[Any]] = set()
         self._stopping = False
+        self._resetting = False
+        self._reset_lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self.last_health: HealthReport | None = None
+
+    @property
+    def _halted(self) -> bool:
+        """Shutting down or resetting: cancelled work must not start new work as it ends."""
+        return self._stopping or self._resetting
+
+    def _check_open(self) -> None:
+        if self._resetting:
+            raise ResetInProgressError("raida is being reset to factory settings; try again")
 
     # -- lifecycle -------------------------------------------------------------------------
 
@@ -94,6 +110,61 @@ class Scheduler:
                 await task
         self.resources.shutdown()
         await self.llm.aclose()
+
+    async def factory_reset(self) -> ResetSummary:
+        """Nuke: stop all work and delete everything the user made (every session with its
+        answers and exports, every library file with its transcript and notes, the user's
+        skills and deleted built-in ones, database backups), leaving raida as installed. The
+        settings file, the downloaded models and files added by path are kept."""
+        async with self._reset_lock:
+            self._resetting = True
+            try:
+                await self._cancel_all_work()
+                skills = sum(
+                    1
+                    for info in (await asyncio.to_thread(self.skills.list))[0]
+                    if info.origin != "builtin"
+                )
+                db_before = await asyncio.to_thread(self._db_bytes)
+                counts = await asyncio.to_thread(self.db.wipe)
+                freed = await asyncio.to_thread(ingest.remove_user_data, self.config)
+                freed += max(0, db_before - await asyncio.to_thread(self._db_bytes))
+            finally:
+                self._resetting = False
+        summary = ResetSummary(**counts, skills=skills, bytes_freed=freed)
+        log.warning("factory_reset", extra=summary.model_dump())
+        # Every tab reloads: the sessions they show are gone.
+        self.events.publish(Event("app.reset", summary.model_dump()))
+        return summary
+
+    async def _cancel_all_work(self) -> None:
+        """Cancel every pipeline, answer, read-ahead and background task and wait for them. A
+        cancelled pipeline could start a question waiting for it as it ends; _halted prevents
+        that, and the loop catches anything started meanwhile."""
+        for _ in range(10):
+            tasks = [
+                t
+                for t in (
+                    *self._source_tasks.values(),
+                    *self._message_tasks.values(),
+                    *self._prepare_tasks.values(),
+                    *self._background,
+                )
+                if not t.done()
+            ]
+            if not tasks:
+                return
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        log.warning("reset_tasks_left_running")
+
+    def _db_bytes(self) -> int:
+        path = self.config.db_path
+        files = (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm"))
+        return sum(f.stat().st_size for f in files if f.exists())
 
     def _spawn(self, coro: Any) -> asyncio.Task[Any]:
         task = asyncio.create_task(coro)
@@ -154,6 +225,7 @@ class Scheduler:
         session. A file already in the library is not processed again: dropped into a second
         session it is ready at once, or shares the run in progress. One that failed or was
         cancelled runs again, with the language given now when one is given."""
+        self._check_open()
         await asyncio.to_thread(self.db.get_session, session_id)
         source, created = await asyncio.to_thread(self.db.add_to_library, candidate)
         if not created:
@@ -183,6 +255,7 @@ class Scheduler:
     async def attach_source(self, session_id: str, source_id: str) -> Source:
         """Use a library file in a session. Nothing is processed again, except a file whose
         run failed or was cancelled: asking for it here runs it again."""
+        self._check_open()
         await asyncio.to_thread(self.db.get_session, session_id)
         source = await asyncio.to_thread(self.db.get_source, source_id)
         added = await asyncio.to_thread(self.db.attach_source, session_id, source_id)
@@ -231,6 +304,8 @@ class Scheduler:
     # -- source control --------------------------------------------------------------------
 
     def submit_source(self, source_id: str) -> None:
+        if self._halted:
+            return
         if source_id in self._source_tasks and not self._source_tasks[source_id].done():
             return
         task = asyncio.create_task(self._run_source(source_id), name=f"source:{source_id}")
@@ -249,6 +324,7 @@ class Scheduler:
         return source
 
     async def retry_source(self, source_id: str) -> Source:
+        self._check_open()
         await self.cancel_source(source_id)
         source = await self._set_source(
             source_id, status="queued", progress=0.0, error=None, processed_path=None
@@ -460,7 +536,7 @@ class Scheduler:
         """Read the session's sources into the model server's prompt cache in the background,
         so the next question starts answering after reading only itself. Called when a session
         is opened, when its sources settle and after each answer."""
-        if not self.llm.prompt_cache or self._stopping:
+        if not self.llm.prompt_cache or self._halted:
             return
         running = self._prepare_tasks.get(session_id)
         if running is not None and not running.done():
@@ -701,6 +777,7 @@ class Scheduler:
     ) -> Message:
         """Queue an instruction. ``@name rest`` runs the skill ``name`` with ``rest`` as its
         arguments; ``@@`` at the start sends a literal at sign."""
+        self._check_open()
         content = content.strip()
         if not content:
             raise ValueError("Instruction must not be empty")
@@ -771,6 +848,8 @@ class Scheduler:
         return message
 
     async def _maybe_start_waiting_messages(self, session_id: str) -> None:
+        if self._halted:
+            return
         try:
             waiting = await asyncio.to_thread(self.db.waiting_messages, session_id)
         except NotFoundError:
@@ -779,6 +858,8 @@ class Scheduler:
             await self._start_message_if_ready(message)
 
     async def _start_message_if_ready(self, message: Message) -> None:
+        if self._halted:
+            return
         sources = await asyncio.to_thread(self.db.list_sources, message.session_id)
         pending = [s for s in sources if s.status not in TERMINAL_SOURCE_STATUSES]
         if pending and not message.run_with_ready_only:

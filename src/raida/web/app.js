@@ -26,7 +26,11 @@ const els = {
   deleteSession: $("delete-session"), statusStrip: $("status-strip"),
   tabs: [$("tab-sources"), $("tab-skills")], tabSourcesCount: $("tab-sources-count"), tabSkillsCount: $("tab-skills-count"),
   skillMenu: $("skill-menu"), skillChip: $("skill-chip"), skillsList: $("skills-list"), skillsProblems: $("skills-problems"),
-  skillNew: $("skill-new"), skillImport: $("skill-import"),
+  skillNew: $("skill-new"), skillImport: $("skill-import"), skillsRestore: $("skills-restore"),
+  openSettings: $("open-settings"), settingsDialog: $("settings-dialog"), settingsClose: $("settings-close"),
+  settingsVersion: $("settings-version"), settingsModel: $("settings-model"), settingsDataDir: $("settings-data-dir"),
+  nukeOpen: $("nuke-open"), nukeDialog: $("nuke-dialog"), nukeForm: $("nuke-form"), nukeInput: $("nuke-input"),
+  nukeError: $("nuke-error"), nukeCancel: $("nuke-cancel"), nukeConfirm: $("nuke-confirm"),
   skillImportFile: $("skill-import-file"), skillEditor: $("skill-editor"), skillForm: $("skill-form"),
   skillFormTitle: $("skill-form-title"), skillFormNote: $("skill-form-note"),
   skillFormError: $("skill-form-error"), skillCancel: $("skill-cancel"), skillFormSize: $("skill-form-size"),
@@ -97,6 +101,8 @@ function connect(sessionId) {
   eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
   eventSource.addEventListener("snapshot", (e) => store.loadSnapshot(JSON.parse(e.data)));
   eventSource.addEventListener("app.version", (e) => checkVersion(JSON.parse(e.data).ui));
+  // Another tab nuked Raida: this page's session is gone. The tab that asked reloads itself.
+  eventSource.addEventListener("app.reset", () => { if (!nuking) afterReset(null); });
   for (const type of ["source.updated", "source.removed", "session.sources", "job.progress", "message.updated", "message.delta", "message.progress", "artifact.created", "session.updated", "system.status", "skills.updated"]) {
     eventSource.addEventListener(type, (e) => store.apply(type, JSON.parse(e.data)));
   }
@@ -156,6 +162,76 @@ store.subscribe((state) => {
   }
 });
 
+// -- settings and Nuke -------------------------------------------------------------------
+
+// Nuke sits behind Settings and a dialog that asks for the word typed out, so neither a stray
+// click nor a quick Enter deletes anything.
+const NUKE_WORD = "NUKE";
+let nuking = false;
+
+els.openSettings.addEventListener("click", () => {
+  const h = store.state.health;
+  els.settingsVersion.textContent = h?.version || "unknown";
+  els.settingsModel.textContent = h?.llm?.extra?.model || h?.llm?.detail || "unknown";
+  els.settingsDataDir.textContent = h?.data_dir || "unknown";
+  els.settingsDialog.showModal();
+});
+els.settingsClose.addEventListener("click", () => els.settingsDialog.close());
+els.nukeOpen.addEventListener("click", () => {
+  els.settingsDialog.close();
+  els.nukeForm.reset();
+  els.nukeConfirm.disabled = true;
+  els.nukeError.hidden = true;
+  els.nukeDialog.showModal();
+  els.nukeInput.focus();
+});
+els.nukeInput.addEventListener("input", () => {
+  els.nukeConfirm.disabled = els.nukeInput.value.trim() !== NUKE_WORD;
+});
+els.nukeCancel.addEventListener("click", () => els.nukeDialog.close());
+// Escape cannot dismiss the dialog while the reset runs; the page reloads when it is done.
+els.nukeDialog.addEventListener("cancel", (e) => { if (nuking) e.preventDefault(); });
+els.nukeForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (els.nukeInput.value.trim() !== NUKE_WORD) return;
+  nuking = true;
+  els.nukeConfirm.disabled = els.nukeCancel.disabled = els.nukeInput.disabled = true;
+  els.nukeConfirm.textContent = "Nuking...";
+  try {
+    afterReset(await api.factoryReset(NUKE_WORD));
+  } catch (err) {
+    nuking = false;
+    els.nukeError.textContent = err.message;
+    els.nukeError.hidden = false;
+    els.nukeConfirm.textContent = "Nuke";
+    els.nukeCancel.disabled = els.nukeInput.disabled = false;
+    els.nukeConfirm.disabled = false;
+  }
+});
+
+function afterReset(summary) {
+  // Factory settings in this browser too: forget the saved session, tab and drafts.
+  try {
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of Object.keys(storage)) if (key.startsWith("raida.")) storage.removeItem(key);
+    }
+    if (summary) sessionStorage.setItem("raida.nuked", JSON.stringify(summary));
+  } catch (_) { /* storage unavailable */ }
+  location.reload();
+}
+
+function reportReset() {
+  let summary = null;
+  try {
+    summary = JSON.parse(sessionStorage.getItem("raida.nuked") || "null");
+    sessionStorage.removeItem("raida.nuked");
+  } catch (_) { /* storage unavailable */ }
+  if (!summary) return;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  toast(`Raida is back to factory settings. Deleted ${plural(summary.sessions, "session")}, `
+    + `${plural(summary.sources, "library file")} and ${plural(summary.skills, "skill")}.`);
+}
+
 async function boot() {
   try {
     await refreshSessions();
@@ -168,6 +244,7 @@ async function boot() {
     await selectSession(id);
     api.health().then((h) => store.apply("system.status", h)).catch(() => {});
     skills.refresh();
+    reportReset();
   } catch (err) {
     toast(`Could not reach the raida server: ${err.message}`, true);
   }

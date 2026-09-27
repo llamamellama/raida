@@ -38,7 +38,9 @@ answer is labelled with the skill. Editing the skill later does not change past 
 
 They answer in the main language of the sources, so a Traditional Chinese recording gets a
 Traditional Chinese answer. Edit one to make it yours (the list then says "built-in, changed");
-**Reset** brings the original back.
+**Reset** brings the original back. **Delete** removes any skill you do not use, built-in ones
+included (a changed one goes with your changes); **Restore**, at the bottom of the Skills tab,
+brings the deleted built-in skills back.
 
 ## Making a skill
 
@@ -94,7 +96,10 @@ Follow the output format in [assets/example.md](assets/example.md).
 - The block after `<!-- raida: files -->` is written by raida so other tools find the two
   files; raida ignores it when reading.
 - You can edit these files in any text editor; raida reads them on every use. A folder it
-  cannot read is listed under Skills with the reason, instead of breaking the list.
+  cannot read is listed under Skills with the reason, instead of breaking the list. A broken
+  copy of a built-in skill is listed as "built-in, changed", so Reset and Delete repair it.
+- Deleted built-in skills are named in `.deleted-builtins` in the same folder, one per line.
+  Removing a name, or the file, brings that skill back.
 
 ## Sharing
 

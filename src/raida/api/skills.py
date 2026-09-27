@@ -46,11 +46,11 @@ class SkillPayload(BaseModel):
 class SkillList(BaseModel):
     skills: list[SkillInfo]
     problems: list[SkillProblem]  # skill folders that could not be read, with the reason
+    deleted_builtins: list[str] = []  # built-in skills the user deleted; restorable
 
 
 class DeleteResult(BaseModel):
     deleted: str
-    restored: SkillDetail | None = None  # the built-in skill a deleted change gave way to
 
 
 def _http(exc: SkillError) -> HTTPException:
@@ -60,8 +60,10 @@ def _http(exc: SkillError) -> HTTPException:
 
 
 async def _listing(state: State) -> SkillList:
-    skills, problems = await asyncio.to_thread(state.scheduler.skills.list)
-    return SkillList(skills=skills, problems=problems)
+    store = state.scheduler.skills
+    skills, problems = await asyncio.to_thread(store.list)
+    deleted = await asyncio.to_thread(store.deleted_builtins)
+    return SkillList(skills=skills, problems=problems, deleted_builtins=deleted)
 
 
 async def _changed(state: State) -> None:
@@ -105,12 +107,30 @@ async def update_skill(name: str, body: SkillPayload, state: State) -> SkillDeta
 
 @router.delete("/{name}", response_model=DeleteResult)
 async def delete_skill(name: str, state: State) -> DeleteResult:
+    """Delete a skill. A built-in one is deleted with any changes to it and can be brought
+    back with ``POST /api/skills/restore-builtins``."""
+    await asyncio.to_thread(state.scheduler.skills.delete, name)
+    await _changed(state)
+    return DeleteResult(deleted=name)
+
+
+@router.post("/{name}/reset", response_model=SkillDetail)
+async def reset_skill(name: str, state: State) -> SkillDetail:
+    """Discard the changes to a built-in skill and return the original."""
     try:
-        restored = await asyncio.to_thread(state.scheduler.skills.delete, name)
+        detail = await asyncio.to_thread(state.scheduler.skills.reset, name)
     except SkillError as exc:
         raise _http(exc) from exc
     await _changed(state)
-    return DeleteResult(deleted=name, restored=restored)
+    return detail
+
+
+@router.post("/restore-builtins", response_model=SkillList)
+async def restore_builtins(state: State) -> SkillList:
+    """Bring back every deleted built-in skill."""
+    await asyncio.to_thread(state.scheduler.skills.restore_builtins)
+    await _changed(state)
+    return await _listing(state)
 
 
 @router.post("/import", response_model=ImportResult, status_code=201)
@@ -132,7 +152,10 @@ async def import_skill(file: UploadFile, state: State, replace: bool = False) ->
 
 @router.get("/{name}/export")
 async def export_skill(name: str, state: State) -> Response:
-    data = await asyncio.to_thread(state.scheduler.skills.export_zip, name)
+    try:
+        data = await asyncio.to_thread(state.scheduler.skills.export_zip, name)
+    except SkillError as exc:  # a copy that cannot be read: say why instead of a bare 500
+        raise _http(exc) from exc
     return Response(
         content=data,
         media_type="application/zip",

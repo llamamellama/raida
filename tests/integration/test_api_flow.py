@@ -83,7 +83,9 @@ async def test_ui_is_served_as_it_was_when_the_server_started(
     app = app_module.create_app(make_config(tmp_path))
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
     ):
         page = (await client.get("/")).text
         found = re.search(r'src="/static/([0-9a-f]{12})/app\.js"', page)
@@ -404,7 +406,9 @@ async def test_map_reduce_when_over_budget(tmp_path: Path) -> None:
     app = create_app(config)
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
     ):
         sid = await _session(client)
         r = await client.post(
@@ -500,7 +504,9 @@ async def test_long_source_is_noted_once_and_answered_from_notes(tmp_path: Path)
     app = create_app(_notes_config(tmp_path))
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
     ):
         fake = app.state.raida.scheduler.llm
         sid = await _session(client)
@@ -561,7 +567,9 @@ async def test_long_source_without_notes_is_read_in_full(tmp_path: Path) -> None
     app = create_app(_notes_config(tmp_path, RAIDA_NOTES__ENABLED="false"))
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
     ):
         sid = await _session(client)
         r = await client.post(
@@ -618,7 +626,9 @@ async def test_a_question_waits_for_its_sessions_read_ahead(tmp_path: Path) -> N
     app = create_app(_notes_config(tmp_path))
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client,
     ):
         scheduler = app.state.raida.scheduler
         fake = scheduler.llm

@@ -14,14 +14,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from raida import __version__
-from raida.api import exports, health, messages, sessions, skills, sources
+from raida.api import exports, health, messages, reset, sessions, skills, sources
 from raida.api.deps import AppState
+from raida.api.security import LocalRequestsOnly
 from raida.config import Config
 from raida.db import Database
 from raida.db.repo import NotFoundError
 from raida.model_env import apply_model_env
 from raida.models import HealthReport
-from raida.pipeline.scheduler import Scheduler
+from raida.pipeline.scheduler import ResetInProgressError, Scheduler
 
 log = logging.getLogger(__name__)
 
@@ -83,12 +84,17 @@ def create_app(config: Config, initial_health: HealthReport | None = None) -> Fa
     async def _not_found(_: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    @app.exception_handler(ResetInProgressError)
+    async def _resetting(_: Request, exc: ResetInProgressError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     app.include_router(health.router)
     app.include_router(sessions.router)
     app.include_router(sources.router)
     app.include_router(messages.router)
     app.include_router(exports.router)
     app.include_router(skills.router)
+    app.include_router(reset.router)
 
     @app.middleware("http")
     async def _revalidate_ui(
@@ -100,6 +106,10 @@ def create_app(config: Config, initial_health: HealthReport | None = None) -> Fa
         if request.url.path == "/" or request.url.path.startswith("/static/"):
             response.headers["Cache-Control"] = "no-cache"
         return response
+
+    # Added last, so it is the outermost layer: nothing runs for a request that another site
+    # made the browser send (api/security.py).
+    app.add_middleware(LocalRequestsOnly, extra_hosts=(config.server.host,))
 
     etag = f'"{version}"'
 

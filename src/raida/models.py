@@ -264,3 +264,12 @@ class HealthReport(BaseModel):
     pdf_renderer: ComponentStatus
     storage: ComponentStatus
     data_dir: str
+
+
+class ResetSummary(BaseModel):
+    """What a factory reset (Nuke) deleted."""
+
+    sessions: int
+    sources: int  # library files
+    skills: int  # the user's skills and changed built-in ones
+    bytes_freed: int

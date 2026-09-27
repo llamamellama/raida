@@ -186,6 +186,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .skill-item-desc { font-size: 13px; line-height: 1.45; }
 .skill-item-meta { font-size: 12px; }
 .skill-item .source-actions { margin-top: 4px; }
+.skills-restore { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 var(--gutter) var(--gutter); padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; flex: none; }
+.skills-restore[hidden] { display: none; }
 .skill-form .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; margin: 16px 0 12px; }
 .skill-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .skill-form label.checkbox { flex-direction: row; align-items: center; }
@@ -207,6 +209,8 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 .btn-quiet { background: transparent; }
 .btn-danger { color: var(--danger); }
+.btn-danger-solid { background: var(--danger); border-color: var(--danger); color: var(--on-danger); font-weight: 600; }
+.btn-danger-solid:hover { border-color: var(--text); }
 .btn-sm { padding: 3px 9px; font-size: 12px; }
 
 /* -- dialogs and toast --------------------------------------------------------------- */
@@ -219,6 +223,19 @@ code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft)
 .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .dialog-head h3 { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .text-preview { max-height: 70vh; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--bg); padding: 12px; border-radius: var(--radius-sm); }
+.settings-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 16px; margin: 16px 0; font-size: 13px; }
+.settings-facts dt { color: var(--muted); }
+.settings-facts dd { margin: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; }
+/* Destructive actions live apart, at the bottom, in their own outlined box. */
+.danger-zone { margin-top: 20px; border: 1px solid var(--danger); border-radius: var(--radius); padding: 12px 16px; }
+.danger-zone h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--danger); }
+.danger-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.danger-row p { margin: 4px 0 0; font-size: 12px; line-height: 1.45; }
+.nuke-form p { line-height: 1.5; }
+.nuke-list { margin: 0 0 8px; padding-left: 22px; line-height: 1.6; }
+.nuke-confirm { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 12px; color: var(--muted); }
+.nuke-confirm input { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font-family: var(--mono); letter-spacing: .08em; }
+.nuke-confirm input:focus { outline: 2px solid var(--danger); outline-offset: -1px; }
 .notes-preview { white-space: normal; font-family: var(--sans); font-size: 14px; }
 
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: var(--radius); font-size: 13px; max-width: min(640px, calc(100vw - 2 * var(--gutter))); white-space: pre-wrap; z-index: 20; box-shadow: 0 6px 24px rgba(0,0,0,.2); }

@@ -47,7 +47,27 @@ export const api = {
   getSkill: (name) => request("GET", `/api/skills/${encodeURIComponent(name)}`),
   createSkill: (skill) => request("POST", "/api/skills", skill),
   updateSkill: (name, skill) => request("PUT", `/api/skills/${encodeURIComponent(name)}`, skill),
+  // A built-in skill is deleted with any changes to it; restoreBuiltins brings them all back.
   deleteSkill: (name) => request("DELETE", `/api/skills/${encodeURIComponent(name)}`),
+  resetSkill: (name) => request("POST", `/api/skills/${encodeURIComponent(name)}/reset`),
+  restoreBuiltins: () => request("POST", "/api/skills/restore-builtins"),
+  // Fetched, not navigated to, so an error is a message instead of a page replacing the app.
+  exportSkill: async (name) => {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}/export`);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (_) { /* not json */ }
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    const url = URL.createObjectURL(await res.blob());
+    const link = Object.assign(document.createElement("a"), { href: url, download: `${name}.zip` });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  },
+  // Nuke: deletes everything the user made. The server refuses it without the typed word.
+  factoryReset: (confirm) => request("POST", "/api/reset", { confirm }),
   importSkill: async (file, replace) => {
     const form = new FormData();
     form.append("file", file, file.name);

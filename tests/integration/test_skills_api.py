@@ -74,14 +74,42 @@ async def test_manage_skills(client: httpx.AsyncClient) -> None:
     assert override.json()["origin"] == "override"
     keep_name = await client.put("/api/skills/summary", json={**SKILL, "name": "renamed"})
     assert keep_name.status_code == 400 and "keeps its name" in keep_name.json()["detail"]
-    reset = (await client.delete("/api/skills/summary")).json()
-    assert reset["restored"]["origin"] == "builtin"
-    assert (await client.delete("/api/skills/summary")).status_code == 400
-    assert (await client.delete("/api/skills/notes")).json() == {
-        "deleted": "notes",
-        "restored": None,
-    }
+    reset = await client.post("/api/skills/summary/reset")
+    assert reset.status_code == 200 and reset.json()["origin"] == "builtin"
+    assert (await client.post("/api/skills/summary/reset")).status_code == 400
+    assert (await client.delete("/api/skills/notes")).json() == {"deleted": "notes"}
     assert (await client.delete("/api/skills/notes")).status_code == 404
+
+
+async def test_delete_and_restore_builtin_skills(client: httpx.AsyncClient) -> None:
+    assert (await client.delete("/api/skills/summary")).json() == {"deleted": "summary"}
+    listing = (await client.get("/api/skills")).json()
+    assert "summary" not in {s["name"] for s in listing["skills"]}
+    assert listing["deleted_builtins"] == ["summary"]
+    assert (await client.get("/api/skills/summary")).status_code == 404
+
+    sid = await _session(client)
+    r = await client.post(f"/api/sessions/{sid}/messages", json={"content": "@summary"})
+    assert r.status_code == 400 and "There is no skill named @summary" in r.json()["detail"]
+
+    restored = await client.post("/api/skills/restore-builtins")
+    assert restored.status_code == 200 and restored.json()["deleted_builtins"] == []
+    assert "summary" in {s["name"] for s in restored.json()["skills"]}
+    assert (await _ask(client, sid, "@summary"))["status"] == "done"
+
+
+async def test_a_broken_change_to_a_builtin_is_reported_not_crashed(
+    client: httpx.AsyncClient,
+) -> None:
+    skills_dir = client.app.state.raida.config.skills_dir  # type: ignore[attr-defined]
+    (skills_dir / "summary").mkdir(parents=True)
+    (skills_dir / "summary" / "SKILL.md").write_text("no frontmatter", "utf-8")
+    listing = (await client.get("/api/skills")).json()
+    assert next(s for s in listing["skills"] if s["name"] == "summary")["origin"] == "override"
+    export = await client.get("/api/skills/summary/export")
+    assert export.status_code == 400 and "frontmatter" in export.json()["detail"]
+    assert (await client.post("/api/skills/summary/reset")).json()["origin"] == "builtin"
+    assert (await client.get("/api/skills/summary/export")).status_code == 200
 
 
 async def test_import_and_export(client: httpx.AsyncClient) -> None:

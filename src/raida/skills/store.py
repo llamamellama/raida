@@ -1,8 +1,10 @@
 """Skills on disk: the built-in ones shipped with raida and the user's, one folder per skill.
 
 User skills live in ``<data_dir>/skills/<name>/``. A user skill with the name of a built-in one
-replaces it (origin "override"); deleting it brings the built-in back. Files are read on every
-call, so a skill edited in a text editor is picked up without a restart.
+replaces it (origin "override"); resetting it brings the built-in back. Built-in skills can be
+deleted too: the package's folders stay, and their names are listed in
+``<data_dir>/skills/.deleted-builtins`` until the built-in skills are restored. Files are read
+on every call, so a skill edited in a text editor is picked up without a restart.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import zipfile
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -36,6 +39,8 @@ from raida.skills.model import (
 log = logging.getLogger(__name__)
 
 SKILL_FILE = "SKILL.md"
+# Names of deleted built-in skills, one per line. A dot file: the folder scan skips it.
+DELETED_BUILTINS_FILE = ".deleted-builtins"
 # Where raida 0.1 kept the two files before following the format's directories; still read.
 LEGACY_EXAMPLE = "example.md"
 LEGACY_REFERENCE = "reference.md"
@@ -120,13 +125,44 @@ class SkillStore:
     def _all(self) -> tuple[dict[str, SkillDetail], list[SkillProblem]]:
         builtins, problems = self._scan(self.builtin)
         users, user_problems = self._scan(self.user_dir)
+        deleted = self._deleted()
         merged: dict[str, SkillDetail] = {}
         for name, (skill, folder) in builtins.items():
-            merged[name] = self._detail(skill, "builtin", folder)
+            if name in deleted:
+                continue
+            # A changed copy that cannot be read is still a change: listed as one (its problem
+            # is reported too), so the list offers Reset and Delete to repair it.
+            origin: SkillOrigin = "override" if (self.user_dir / name).is_dir() else "builtin"
+            merged[name] = self._detail(skill, origin, folder)
         for name, (skill, folder) in users.items():
-            origin: SkillOrigin = "override" if name in builtins else "user"
+            origin = "override" if name in builtins and name not in deleted else "user"
             merged[name] = self._detail(skill, origin, folder)
         return dict(sorted(merged.items())), problems + user_problems
+
+    def _deleted(self) -> set[str]:
+        """Names of the built-in skills the user deleted."""
+        try:
+            lines = (self.user_dir / DELETED_BUILTINS_FILE).read_text("utf-8").splitlines()
+        except FileNotFoundError:
+            return set()
+        except (OSError, UnicodeDecodeError) as exc:
+            log.warning("deleted_builtins_unreadable", extra={"error": str(exc)})
+            return set()
+        return {line.strip() for line in lines if NAME_PATTERN.match(line.strip())}
+
+    def _set_deleted(self, names: set[str]) -> None:
+        path = self.user_dir / DELETED_BUILTINS_FILE
+        if not names:
+            path.unlink(missing_ok=True)
+            return
+        self.user_dir.mkdir(parents=True, exist_ok=True)
+        staging = self.user_dir / f"{DELETED_BUILTINS_FILE}.{uuid.uuid4().hex}.tmp"
+        staging.write_text("".join(f"{name}\n" for name in sorted(names)), "utf-8")
+        staging.replace(path)
+
+    def deleted_builtins(self) -> list[str]:
+        """The deleted built-in skills that restore_builtins() would bring back."""
+        return sorted(name for name in self._deleted() if self._is_builtin(name))
 
     @staticmethod
     def _detail(skill: Skill, origin: SkillOrigin, folder: Path) -> SkillDetail:
@@ -148,10 +184,14 @@ class SkillStore:
 
     def load(self, name: str) -> Skill:
         """The skill with its preserved extra frontmatter, for running and exporting."""
-        for root in (self.user_dir, self.builtin):
-            folder = root / name
-            if NAME_PATTERN.match(name) and (folder / SKILL_FILE).is_file():
-                return read_folder(folder)
+        if NAME_PATTERN.match(name):
+            roots = [self.user_dir]
+            if name not in self._deleted():
+                roots.append(self.builtin)
+            for root in roots:
+                folder = root / name
+                if (folder / SKILL_FILE).is_file():
+                    return read_folder(folder)
         raise SkillNotFoundError(f"no skill named {name!r}")
 
     def names(self) -> list[str]:
@@ -159,9 +199,6 @@ class SkillStore:
 
     def _is_builtin(self, name: str) -> bool:
         return (self.builtin / name / SKILL_FILE).is_file()
-
-    def _is_user(self, name: str) -> bool:
-        return (self.user_dir / name / SKILL_FILE).is_file()
 
     def _taken(self, name: str) -> bool:
         """A readable skill has this name. A folder that cannot be read does not count: saving
@@ -214,25 +251,56 @@ class SkillStore:
                 )
             if self._taken(skill.name):
                 raise SkillConflictError(f"a skill named {skill.name!r} already exists")
-        if not skill.extra and self._is_user(name):
+        if not skill.extra:
             # Keep frontmatter from an import (license, other metadata) across edits in the UI.
-            skill = skill.model_copy(update={"extra": read_folder(self.user_dir / name).extra})
-        elif not skill.extra and self._is_builtin(name):
-            skill = skill.model_copy(update={"extra": read_folder(self.builtin / name).extra})
+            skill = skill.model_copy(update={"extra": self._kept_frontmatter(name)})
         self._write(skill)
         if skill.name != name:
             shutil.rmtree(self.user_dir / name, ignore_errors=True)
         return self.get(skill.name)
 
-    def delete(self, name: str) -> SkillDetail | None:
-        """Delete a user skill; for a changed built-in one, bring the original back and return
-        it."""
-        current = self.get(name)
-        if current.origin == "builtin":
-            raise SkillError(f"{name!r} is a built-in skill and cannot be deleted")
-        shutil.rmtree(self.user_dir / name)
+    def _kept_frontmatter(self, name: str) -> dict[str, Any]:
+        """Frontmatter raida does not use, from the user's copy or else the built-in one. A
+        copy that cannot be read keeps nothing: saving over it is how the user repairs it."""
+        for root in (self.user_dir, self.builtin):
+            folder = root / name
+            if (folder / SKILL_FILE).is_file():
+                try:
+                    return read_folder(folder).extra
+                except (SkillError, OSError, UnicodeDecodeError):
+                    continue
+        return {}
+
+    def delete(self, name: str) -> None:
+        """Delete a skill: the user's own, or a built-in one together with any changes to it.
+        A deleted built-in skill stays away until restore_builtins()."""
+        try:
+            self.get(name)
+        except SkillNotFoundError:
+            # A folder that cannot be read is not listed as a skill, but can still be removed.
+            if not (NAME_PATTERN.match(name) and (self.user_dir / name).is_dir()):
+                raise
+        if (self.user_dir / name).is_dir():
+            shutil.rmtree(self.user_dir / name)
+        if self._is_builtin(name):
+            self._set_deleted(self._deleted() | {name})
         log.info("skill_deleted", extra={"skill": name})
-        return self.get(name) if current.origin == "override" else None
+
+    def reset(self, name: str) -> SkillDetail:
+        """Discard the user's changes to a built-in skill and return the original."""
+        if self.get(name).origin != "override":
+            raise SkillError(f"{name!r} has no changes to discard")
+        shutil.rmtree(self.user_dir / name)
+        log.info("skill_reset", extra={"skill": name})
+        return self.get(name)
+
+    def restore_builtins(self) -> list[str]:
+        """Bring back every deleted built-in skill; returns their names."""
+        restored = self.deleted_builtins()
+        self._set_deleted(set())
+        if restored:
+            log.info("builtin_skills_restored", extra={"skills": restored})
+        return restored
 
     # -- import and export -----------------------------------------------------------------
 

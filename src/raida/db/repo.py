@@ -29,6 +29,7 @@ from raida.models import (
 )
 
 SCHEMA_VERSION = 6
+_USER_TABLES = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
 _JSON_FIELDS = {"meta", "token_usage"}
 _NULLABLE_JSON_FIELDS = {"skill"}
 _BOOL_FIELDS = {"managed", "run_with_ready_only", "title_auto", "full_text"}
@@ -90,6 +91,35 @@ class Database:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def wipe(self) -> dict[str, int]:
+        """Delete every row, for a factory reset, and compact the file so that what was
+        deleted does not linger in free pages or the write-ahead log. Returns how many sessions
+        and library files there were."""
+        with self._lock:
+            counts = {
+                "sessions": self._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
+                "sources": self._conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0],
+            }
+            # Every table, including any added after this was written.
+            tables = [row[0] for row in self._conn.execute(_USER_TABLES)]
+            # Every row of every table goes, so no reference can dangle; with the checks on,
+            # the order of the deletes would matter. The pragma is a no-op inside a transaction.
+            self._conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for table in tables:
+                        self._conn.execute(f'DELETE FROM "{table}"')
+                except BaseException:
+                    self._conn.execute("ROLLBACK")
+                    raise
+                self._conn.execute("COMMIT")
+            finally:
+                self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("VACUUM")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return counts
 
     # -- schema ----------------------------------------------------------------------------
 
